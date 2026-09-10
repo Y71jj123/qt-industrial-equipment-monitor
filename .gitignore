@@ -1,0 +1,56 @@
+# ===== 构建产物 =====
+build/
+build-*/
+!build/.gitkeep
+cmake-build-*/
+Makefile
+*.mk
+*.o
+*.obj
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qm
+.qmake.stash
+.qmake.cache
+
+# ===== Qt Creator =====
+CMakeLists.txt.user
+CMakeUserPresets.json
+*.pro.user
+*.pro.user.*
+*.autosave
+
+# ===== IDE / 编辑器 =====
+.vs/
+.vscode/
+.idea/
+*.swp
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志与本地数据（按需保留） =====
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# ===== 本地环境变量 =====
+.env
+
+# ===== WorkBuddy 工作区内部目录（勿提交） =====
+.workbuddy/
