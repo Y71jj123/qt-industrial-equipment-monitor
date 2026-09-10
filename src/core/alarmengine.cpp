@@ -2,6 +2,8 @@
 
 #include "utils/logger.h"
 
+#include <utility>
+
 AlarmEngine::AlarmEngine(QObject *parent)
     : QObject(parent)
 {
@@ -77,7 +79,7 @@ void AlarmEngine::checkValue(const QString &deviceId, const QString &tagId, cons
 
     const QString key = makeKey(deviceId, tagId);
 
-    for (const AlarmRule &rule : qAsConst(m_rules)) {
+    for (const AlarmRule &rule : std::as_const(m_rules)) {
         if (!rule.enabled || rule.deviceId != deviceId || rule.tagId != tagId)
             continue;
 

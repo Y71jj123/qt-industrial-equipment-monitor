@@ -5,23 +5,63 @@
 #include <QRandomGenerator>
 #include <QTimer>
 
+#include <utility>
+
 namespace {
 
-const QStringList kDefaultTags = {
-    QStringLiteral("temperature"),  // 温度 °C
-    QStringLiteral("pressure"),     // 压力 kPa
-    QStringLiteral("speed"),        // 转速 rpm
-    QStringLiteral("running"),      // 运行状态 0/1
+/// 单个模拟点位的描述。
+struct TagSpec
+{
+    QString id;
+    double baseline;  ///< 基准值：工况常态（均值回归的目标）
+    double lo;        ///< 波动下界
+    double hi;        ///< 波动上界
+    bool boolean;     ///< 开关量，只输出 0 / 1
 };
+
+/// 默认点位表。
+///
+/// 设计要点：hi 取得比对应的告警上限略低一点，让数值**偶尔**越限
+/// （这样能演示告警功能），但因为有均值回归，它不会长时间贴在边界上
+/// 反复穿过阈值 —— 那会造成“越限 → 恢复 → 越限”的告警抖动。
+///   温度 上限 60 / 压力 上限 80 / 转速 上限 90
+const QList<TagSpec> &defaultSpecs()
+{
+    static const QList<TagSpec> specs = {
+        {QStringLiteral("temperature"), 42.0, 25.0, 68.0, false},
+        {QStringLiteral("pressure"), 55.0, 30.0, 85.0, false},
+        {QStringLiteral("speed"), 58.0, 30.0, 88.0, false},
+        {QStringLiteral("running"), 1.0, 0.0, 1.0, true},
+    };
+    return specs;
+}
+
+const TagSpec *findSpec(const QString &tag)
+{
+    const QList<TagSpec> &specs = defaultSpecs();
+    for (const TagSpec &spec : specs) {
+        if (spec.id == tag)
+            return &spec;
+    }
+    return nullptr;
+}
+
+/// [0, 1) 之间的随机数
+double randomUnit()
+{
+    return QRandomGenerator::global()->bounded(1000) / 1000.0;
+}
 
 } // namespace
 
 MockConnection::MockConnection(QObject *parent)
     : DeviceConnection(parent)
-    , m_tags(kDefaultTags)
 {
-    for (const QString &tag : m_tags)
-        m_base.insert(tag, QRandomGenerator::global()->bounded(100.0));
+    for (const TagSpec &spec : defaultSpecs()) {
+        m_tags << spec.id;
+        m_base.insert(spec.id, spec.baseline);
+        m_values.insert(spec.id, spec.baseline);
+    }
 
     // 定时器属于创建它的线程；本类对象若被 moveToThread，定时器需随对象重建。
     m_timer = new QTimer(this);
@@ -109,9 +149,11 @@ void MockConnection::setTags(const QStringList &tags)
     m_tags = tags;
     m_values.clear();
     m_base.clear();
-    for (const QString &tag : m_tags) {
-        m_base.insert(tag, QRandomGenerator::global()->bounded(100.0));
-        m_values.insert(tag, 0.0);
+    for (const QString &tag : tags) {
+        const TagSpec *spec = findSpec(tag);
+        const double baseline = spec ? spec->baseline : 50.0;
+        m_base.insert(tag, baseline);
+        m_values.insert(tag, baseline);
     }
 }
 
@@ -137,14 +179,29 @@ void MockConnection::tick()
     if (!m_open)
         return;
 
-    // 以基础值做缓慢漂移 + 随机噪声，看起来像真实工况
-    for (const QString &tag : qAsConst(m_tags)) {
-        double &base = m_base[tag];
-        base += QRandomGenerator::global()->bounded(2.0) - 1.0;
-        base = qBound(0.0, base, 100.0);
+    for (const QString &tag : std::as_const(m_tags)) {
+        const TagSpec *spec = findSpec(tag);
 
-        const double noise = (QRandomGenerator::global()->bounded(200.0) - 100.0) / 100.0;
-        const double value = base + noise;
+        // 开关量：只输出 0 / 1，大部分时间处于“运行”状态
+        if (spec && spec->boolean) {
+            const double v = (QRandomGenerator::global()->bounded(100) < 85) ? 1.0 : 0.0;
+            m_values.insert(tag, v);
+            emit tagValueChanged(tag, v);
+            continue;
+        }
+
+        const double lo = spec ? spec->lo : 0.0;
+        const double hi = spec ? spec->hi : 100.0;
+        const double baseline = spec ? spec->baseline : (lo + hi) / 2.0;
+
+        // 均值回归 + 小幅扰动：始终往基准值靠，不会被随机游走带到边界上卡住
+        double &base = m_base[tag];
+        base += (baseline - base) * 0.10;
+        base += (randomUnit() - 0.5) * 4.0;
+        base = qBound(lo, base, hi);
+
+        // 输出时再叠加一点测量噪声
+        const double value = qBound(lo, base + (randomUnit() - 0.5) * 2.0, hi);
 
         m_values.insert(tag, value);
         emit tagValueChanged(tag, value);
