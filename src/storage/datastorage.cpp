@@ -6,17 +6,27 @@
 #include <QFileInfo>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStandardPaths>
 #include <QVariant>
 
 namespace {
+
 constexpr auto kConnectionName = "app-main";
+
+/// 默认数据库位置：系统标准的应用数据目录
+/// （Windows 上形如 %APPDATA%\<组织>\<应用>\monitor.db）。
+/// 不能用相对路径 —— 那会跟着程序的工作目录跑，换一种启动方式就找不到数据。
+QString defaultDatabasePath()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return QDir(dir).filePath(QStringLiteral("monitor.db"));
 }
+
+} // namespace
 
 DataStorage::DataStorage(QObject *parent, const QString &databasePath)
     : QObject(parent)
-    , m_databasePath(databasePath.isEmpty()
-                         ? QDir::current().filePath(QStringLiteral("data/monitor.db"))
-                         : databasePath)
+    , m_databasePath(databasePath.isEmpty() ? defaultDatabasePath() : databasePath)
 {
 }
 

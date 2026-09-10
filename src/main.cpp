@@ -1,4 +1,6 @@
 #include <QApplication>
+#include <QDir>
+#include <QStandardPaths>
 
 #include "core/alarmengine.h"
 #include "core/devicemanager.h"
@@ -14,7 +16,9 @@ int main(int argc, char *argv[])
     QApplication::setApplicationVersion(QStringLiteral(APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("Y71jj123"));
 
-    Log::instance().init(QStringLiteral("logs/app.log"));
+    // 日志与数据库都放在系统标准的应用数据目录，不跟着工作目录跑
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    Log::instance().init(QDir(dataDir).filePath(QStringLiteral("logs/app.log")));
     Log::info(QStringLiteral("应用启动，版本 %1").arg(QStringLiteral(APP_VERSION)));
 
     // 数据层：本地历史数据（失败不致命，仅影响历史查询功能）
