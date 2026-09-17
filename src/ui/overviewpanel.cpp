@@ -1,24 +1,32 @@
 #include "ui/overviewpanel.h"
 
 #include "core/acquisitionscheduler.h"
+#include "core/alarmengine.h"
 #include "storage/datastorage.h"
 
+#include <QAbstractItemView>
 #include <QColor>
 #include <QDate>
 #include <QEvent>
+#include <QFont>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QHideEvent>
 #include <QLabel>
 #include <QLocale>
 #include <QPainter>
 #include <QPixmap>
 #include <QShowEvent>
+#include <QStringList>
 #include <QStyle>
+#include <QTableWidget>
 #include <QTime>
 #include <QTimer>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -27,6 +35,10 @@ constexpr int kDeviceCardColumns = 3;
 
 /// 上面一堵 KPI 墙的列数。
 constexpr int kKpiColumns = 4;
+
+/// 「当前活动告警」最多列几条。
+/// 这里是"扫一眼有没有事"，不是处理告警的地方 —— 看明细去「告警」页。
+constexpr int kMaxAlarmRows = 6;
 
 /// 数据库统计的刷新间隔（毫秒）。
 /// 仪表盘看的是"量级"而不是"实时"，2 秒足够；再快就是拿磁盘换没人在意的精度。
@@ -123,6 +135,7 @@ OverviewPanel::OverviewPanel(DeviceManager *deviceManager,
     if (m_alarmEngine) {
         connect(m_alarmEngine, &AlarmEngine::activeAlarmsChanged, this, [this]() {
             updateKpiValues();
+            rebuildActiveAlarmTable();
             markAllDevicesDirty();
         });
     }
@@ -160,6 +173,27 @@ void OverviewPanel::setupUi()
     m_deviceGrid->setSpacing(10);
     m_deviceGrid->setAlignment(Qt::AlignTop);
 
+    // 活动告警区：有告警时才露表格，平时只有一行"当前没有活动告警"
+    m_alarmSectionTitle = new QLabel(QStringLiteral("当前活动告警"), this);
+    m_alarmSectionTitle->setObjectName(QStringLiteral("sectionTitle"));
+
+    m_noAlarmHint = new QLabel(QStringLiteral("当前没有活动告警。"), this);
+    m_noAlarmHint->setObjectName(QStringLiteral("emptyHint"));
+
+    m_activeAlarmTable = new QTableWidget(0, 5, this);
+    m_activeAlarmTable->setHorizontalHeaderLabels({QStringLiteral("时间"),
+                                                   QStringLiteral("设备"),
+                                                   QStringLiteral("点位"),
+                                                   QStringLiteral("级别"),
+                                                   QStringLiteral("描述")});
+    m_activeAlarmTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_activeAlarmTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_activeAlarmTable->verticalHeader()->setVisible(false);
+    m_activeAlarmTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_activeAlarmTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    // 高度按"最多 6 行"封顶：再多就该去「告警」页处理了，别把首页撑成列表页
+    m_activeAlarmTable->setMaximumHeight(240);
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(14, 14, 14, 14);
     layout->setSpacing(12);
@@ -167,6 +201,9 @@ void OverviewPanel::setupUi()
     layout->addWidget(m_deviceSectionTitle);
     layout->addWidget(m_emptyHint);
     layout->addLayout(m_deviceGrid);
+    layout->addWidget(m_alarmSectionTitle);
+    layout->addWidget(m_noAlarmHint);
+    layout->addWidget(m_activeAlarmTable);
     layout->addStretch(1);
 
     // 数据库统计：低频 + 只在页面可见时转（见 showEvent / hideEvent）
@@ -283,6 +320,7 @@ void OverviewPanel::refresh()
 {
     updateKpiValues();
     rebuildDeviceCards();
+    rebuildActiveAlarmTable();
     refreshDatabaseStats();
 }
 
@@ -567,6 +605,72 @@ void OverviewPanel::flushDirtyDeviceCards()
         updateDeviceCard(deviceId);
 
     m_dirtyDevices.clear();
+}
+
+void OverviewPanel::rebuildActiveAlarmTable()
+{
+    if (!m_activeAlarmTable)
+        return;
+
+    QList<AlarmRecord> alarms;
+    if (m_alarmEngine)
+        alarms = m_alarmEngine->activeAlarms();
+
+    // AlarmEngine 的活动告警存在 QHash 里，拿出来是无序的 —— 这里按时间倒序，
+    // "最新出的那条"永远在第一行。
+    std::sort(alarms.begin(), alarms.end(),
+              [](const AlarmRecord &left, const AlarmRecord &right) {
+                  return left.time > right.time;
+              });
+
+    const int rows = qMin(int(alarms.size()), kMaxAlarmRows);
+    m_activeAlarmTable->setRowCount(rows);
+
+    for (int row = 0; row < rows; ++row) {
+        const AlarmRecord &record = alarms.at(row);
+        const QString deviceName = m_deviceManager
+                                       ? m_deviceManager->device(record.deviceId).name
+                                       : QString();
+        const QString shownName = deviceName.isEmpty() ? record.deviceId : deviceName;
+
+        const QStringList cells = {record.time.toString(QStringLiteral("MM-dd HH:mm:ss")),
+                                   shownName,
+                                   record.tagId,
+                                   alarmLevelName(record.level),
+                                   record.message};
+
+        for (int column = 0; column < cells.size(); ++column) {
+            auto *item = new QTableWidgetItem(cells.at(column));
+            item->setToolTip(cells.at(column));
+            m_activeAlarmTable->setItem(row, column, item);
+        }
+
+        // 级别上色：严重红、警告橙、提示不上色（弱化处理，免得整屏都在喊）
+        QColor levelColor;
+        if (record.level == AlarmLevel::Critical)
+            levelColor = QColor(0xd94a4a);
+        else if (record.level == AlarmLevel::Warning)
+            levelColor = QColor(0xd4832a);
+        if (levelColor.isValid()) {
+            if (QTableWidgetItem *item = m_activeAlarmTable->item(row, 3)) {
+                item->setForeground(levelColor);
+                QFont font = item->font();
+                font.setBold(true);
+                item->setFont(font);
+            }
+        }
+    }
+
+    const bool empty = alarms.isEmpty();
+    m_alarmSectionTitle->setText(
+        empty ? QStringLiteral("当前活动告警")
+              : QStringLiteral("当前活动告警（共 %1 条%2）")
+                    .arg(alarms.size())
+                    .arg(alarms.size() > kMaxAlarmRows
+                             ? QStringLiteral("，仅显示最新 %1 条").arg(kMaxAlarmRows)
+                             : QString()));
+    m_noAlarmHint->setVisible(empty);
+    m_activeAlarmTable->setVisible(!empty);
 }
 
 void OverviewPanel::refreshDatabaseStats()

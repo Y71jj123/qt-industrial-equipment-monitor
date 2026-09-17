@@ -15,6 +15,7 @@ class QGridLayout;
 class QHideEvent;
 class QLabel;
 class QShowEvent;
+class QTableWidget;
 class QTimer;
 
 /// 总览仪表盘（首页）。
@@ -102,6 +103,9 @@ private:
     void updateDeviceCard(const QString &deviceId);
     void markAllDevicesDirty();
 
+    /// 重建"当前活动告警"列表（只列最新的若干条，全量在「告警」页看）。
+    void rebuildActiveAlarmTable();
+
     static QString valueKey(const QString &deviceId, const QString &tagId);
 
     DeviceManager *m_deviceManager = nullptr;
@@ -122,6 +126,11 @@ private:
     QGridLayout *m_deviceGrid = nullptr;
     QLabel *m_deviceSectionTitle = nullptr;
     QLabel *m_emptyHint = nullptr;
+
+    /// 「当前活动告警」区：无告警时显示一行提示，有告警时显示紧凑表格。
+    QLabel *m_alarmSectionTitle = nullptr;
+    QLabel *m_noAlarmHint = nullptr;
+    QTableWidget *m_activeAlarmTable = nullptr;
 
     QTimer *m_statsTimer = nullptr;  ///< 数据库统计（低频，页面可见才转）
     QTimer *m_cardTimer = nullptr;   ///< 设备卡攒批刷新（单次触发）
