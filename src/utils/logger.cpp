@@ -1,11 +1,15 @@
 #include "utils/logger.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
 
 namespace {
+
+/// 日志器在 QCoreApplication 下的对象名（见 Log::instance() 的说明）。
+constexpr auto kLoggerObjectName = "monitor-logger";
 
 QString levelName(Log::Level level)
 {
@@ -35,8 +39,28 @@ Log::Log(QObject *parent)
 
 Log &Log::instance()
 {
-    static Log logger;
-    return logger;
+    QCoreApplication *app = QCoreApplication::instance();
+    if (!app) {
+        // 没有 QCoreApplication 的场合（纯逻辑单测）：退回函数内静态就够了。
+        static Log fallback;
+        return fallback;
+    }
+
+    // 为什么挂在 QCoreApplication 下查找：协议插件是独立动态库、**静态链接了同一份
+    // 源码**，函数内静态局部变量在"一个模块一份"的情况下会各造一个实例 ——
+    // 结果是两个 QFile 句柄抢同一个日志文件、两套滚动计数互相打架。
+    //
+    // 为什么这里按 QObject 查找、再自己向下转型，而不是直接用 findChild<Log*>：
+    // 后者依赖跨模块的元对象转换，实测在插件里**找不到**主程序建的那个实例
+    // （同模块内则一切正常），于是又新建一个 —— 单例就名存实亡了。
+    // QObject 的元对象在 Qt6Core 里、全进程唯一，所以这一层查找一定找得到；
+    // 而 monitor-logger 这个名字是本类专有的，向下转型是安全的。
+    if (QObject *existing = app->findChild<QObject *>(QString::fromLatin1(kLoggerObjectName)))
+        return *static_cast<Log *>(existing);
+
+    auto *created = new Log(app);
+    created->setObjectName(QString::fromLatin1(kLoggerObjectName));
+    return *created;
 }
 
 void Log::init(const QString &filePath, qint64 maxBytes, int maxFiles)

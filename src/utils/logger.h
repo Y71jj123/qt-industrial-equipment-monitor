@@ -30,6 +30,7 @@ public:
     /// 保留的历史日志份数（不含当前文件）。超出的最老一份被删除。
     static constexpr int kDefaultMaxFiles = 5;
 
+    /// 进程内唯一的日志器（挂在 QCoreApplication 下查找，见 .cpp 里的说明）。
     static Log &instance();
 
     /// 初始化日志文件；filePath 为空时只输出到控制台。

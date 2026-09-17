@@ -37,8 +37,9 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
 E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
 ```
 
-- 三个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR）、`tst_datastorage`
-  （告警 NULL 语义 / 统计口径 / 溢出队列与补传顺序）、`tst_configio`（配置往返）。
+- 四个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR）、`tst_datastorage`
+  （告警 NULL 语义 / 统计口径 / 溢出队列与补传顺序）、`tst_configio`（配置往返）、
+  `tst_protocolregistry`（注册表规则 / 老整型映射 / 外部插件加载）。
 - 测试**链接 `monitor_core`**，也就是产品实际运行的那份代码；不要另外编译一份源码来测。
 - 新增测试文件后要在 `tests/CMakeLists.txt` 里加一行 `monitor_add_test(<名字>)`。
 - 测试一律用 `QTEST_GUILESS_MAIN`（QCoreApplication）—— CI 没有显示器，
@@ -46,6 +47,10 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
 - ⚠️ Windows 上 ctest 跑测试若报 `0xc0000135`（找不到 DLL），不是测试写错了：
   `tests/CMakeLists.txt` 已经用 `ENVIRONMENT_MODIFICATION` 把 Qt 的 bin 目录加进测试进程 PATH，
   改这块时别手拼 `PATH=`（Windows 的 `;` 会被 CMake 当列表分隔符切碎）。
+- 手工看测试明细时：**QTest 的输出在有些终端里会被吞掉**，用
+  `./tst_xxx.exe -o - -o out.txt,txt` 把结果同时写到文件再看。
+- 从命令行直接跑 `build-vscode/tests/*.exe` 记得把 Qt 的 bin 加进 PATH（例如
+  `export PATH="/e/Qt/6.11.2/mingw_64/bin:$PATH"`）—— 测试产物目录里没有 Qt 的 DLL。
 
 ## 代码规范
 
@@ -64,8 +69,9 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
    直接取原始 0/1，不乘 `scale`。
 3. **Qt Charts 是可选依赖** —— 图表相关代码要用 `#ifdef HAVE_QT_CHARTS` 包裹；
    但被多个面板共用的成员（如 `m_rightTabs`）**不能**放进 ifdef 里。
-4. **新增协议只改一处** —— `AcquisitionScheduler::createConnection()` 里的 switch。
-   上层（界面 / 调度）不应感知协议差异。
+4. **新增协议 = 写一个插件，核心代码一行都不用改**（详见下面「协议插件」一节）。
+   `AcquisitionScheduler::createConnection()` 里**已经没有 switch 了** ——
+   谁要是往那儿加分支，等于把刚拆掉的耦合又装回去。
 5. **改数据库结构**要写 `CREATE TABLE IF NOT EXISTS`，并**同时补一次 `ensureColumn()`**
    （老库不会因为 CREATE TABLE IF NOT EXISTS 而多出新列）。
    现有补列：`devices.grp`、`devices.username`、`devices.password`、
@@ -79,6 +85,46 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
    - **写入时必须区分"有值"和"NULL"**：未处理的告警要把 `disposition/handled_at` 写成 NULL，
      不能写 `disposition` 的默认值 0（那是"已处理恢复"）—— 否则报表会把未处理告警算成已处理。
      判断"是否处理过"**永远以 `handled_at` 是否有效为准**，不要看 disposition 的值。
+
+## 协议插件（P1-1）
+
+架构一句话：**协议是数据，不是代码分支**。协议 id → 插件的映射放在 `ProtocolRegistry`，
+上层（采集调度 / 设备对话框 / 存储 / 配置）一律"问注册表"，不认识任何具体协议。
+
+- 接口在 `comm/protocolplugin.h`：`IProtocolPlugin`（纯虚，**不继承 QObject**）
+  + `ProtocolTraits`（声明需要哪些配置字段）。
+- 内置协议（`mock` / `modbus_tcp` / `mqtt`）在 `comm/builtinprotocols.cpp` 里
+  以插件形式注册，与外部插件**完全平权**。注册用显式调用
+  `registerBuiltinProtocols()`（`main.cpp` 启动时调用一次），
+  **不要改成"C++ 静态对象自动注册"** —— 静态库里的自注册对象会被链接器整个丢掉，
+  而这种失败只在运行期才暴露（协议莫名其妙不存在）。
+- 外部插件：编成 `MODULE` 动态库，产物落到 exe 旁的 `plugins/protocols/`，
+  启动时 `loadPluginsFromStandardLocations()` 扫描（还会试 `<exe>/../plugins/protocols`，
+  兼容安装包布局）。样板看 `plugins/http_json/`。
+- **`DeviceInfo::protocol` 已从枚举改成字符串 `protocolId`**。别再引入按协议名的
+  `if/else`：需要区分协议行为时，加 `ProtocolTraits` 字段或加接口方法。
+- 老数据兼容：`devices.protocol`（整型）列**保留并继续写**（内置协议写对应编号、
+  其它写 -1），老库/老导出文件靠 `ProtocolRegistry::idFromLegacyInt()` 这张
+  **冻结映射表**读起来。写库与导出 JSON 都会同时留一份老整型，便于降级回旧版本。
+- 界面：设备对话框的协议下拉来自 `registry.plugins()`，
+  字段可见性来自 `registry.traits(id)`，连"端点字段叫什么"都由
+  `traits.endpointLabel` 决定（MQTT 叫"订阅主题"、HTTP 插件叫"请求路径"，
+  落在同一个 `DeviceInfo::mqttTopic` 字段上）。**界面文件里不该出现任何协议名。**
+- 协议不可用时（插件缺失 / id 写错）必须**明确失败**并打日志列出可用协议，
+  **不许兜底成默认协议** —— 那会让"配置错了"表现成"数据看着像对的"。
+
+## 跨动态库的坑（协议插件踩出来的）
+
+1. **不要跨模块用 `findChild<自己的类型*>` 找单例。** 协议插件是独立 DLL、静态链接了
+   同一份 `monitor_core`，函数内静态局部变量于是"一个模块一份"。把单例挂到
+   `QCoreApplication` 下用 `findChild<自己的类型*>` 查找**也不可靠** ——
+   实测在插件里找不到主程序建的那个实例（同模块内一切正常），于是又新建一个，
+   单例名存实亡（本例的症状是两个 `QFile` 句柄抢同一个日志文件、两套滚动计数互相打架）。
+   可靠写法见 `utils/logger.cpp::Log::instance()`：**用 `findChild<QObject *>(名字)`
+   在 QObject 层查找（QObject 的元对象在 Qt6Core 里、全进程唯一），再自己向下转型**。
+2. 插件里可以正常用 `Log::info()` —— 上面的写法保证它落到**主程序那一个**日志文件里。
+3. 插件的连接对象**不要设父对象**（`IProtocolPlugin::create()` 的约定）：
+   采集调度器要把它 `moveToThread`，有父对象的 QObject 搬不了线程。
 
 ## 长期运行相关（日志 / 崩溃）
 

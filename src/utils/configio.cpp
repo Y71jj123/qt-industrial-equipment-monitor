@@ -1,5 +1,7 @@
 #include "utils/configio.h"
 
+#include "comm/protocolregistry.h"
+
 #include <QDateTime>
 #include <QFile>
 #include <QJsonDocument>
@@ -58,7 +60,10 @@ QJsonObject deviceToJson(const DeviceInfo &device)
     object.insert(QStringLiteral("port"), int(device.port));
     object.insert(QStringLiteral("slaveId"), device.slaveId);
     object.insert(QStringLiteral("pollIntervalMs"), device.pollIntervalMs);
-    object.insert(QStringLiteral("protocol"), int(device.protocol));
+    object.insert(QStringLiteral("protocolId"), device.protocolId);
+    // 老的整型字段照旧写一份：旧版本的导出文件能被新版本读，
+    // 新版本的导出文件也尽量别让旧版本reader一头雾水（认不出就落默认协议）。
+    object.insert(QStringLiteral("protocol"), ProtocolRegistry::legacyIntFromId(device.protocolId));
     object.insert(QStringLiteral("mqttTopic"), device.mqttTopic);
     object.insert(QStringLiteral("username"), device.username);
     object.insert(QStringLiteral("password"), device.password);
@@ -76,7 +81,15 @@ DeviceInfo deviceFromJson(const QJsonObject &object)
     device.port = static_cast<quint16>(object.value(QStringLiteral("port")).toInt(502));
     device.slaveId = object.value(QStringLiteral("slaveId")).toInt(1);
     device.pollIntervalMs = object.value(QStringLiteral("pollIntervalMs")).toInt(1000);
-    device.protocol = static_cast<DeviceProtocol>(object.value(QStringLiteral("protocol")).toInt(0));
+    // 协议：新格式是字符串 id；老格式只有整型枚举，读到时按冻结表映射一次，
+    // 这样老导出文件不用改也还能导入。
+    const QString protocolId = object.value(QStringLiteral("protocolId")).toString();
+    if (!protocolId.isEmpty()) {
+        device.protocolId = protocolId;
+    } else {
+        device.protocolId = ProtocolRegistry::idFromLegacyInt(
+            object.value(QStringLiteral("protocol")).toInt(0));
+    }
     device.mqttTopic = object.value(QStringLiteral("mqttTopic")).toString();
     device.username = object.value(QStringLiteral("username")).toString();
     device.password = object.value(QStringLiteral("password")).toString();

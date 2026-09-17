@@ -33,6 +33,10 @@ set(PROJECT_SOURCES
 
     # Communication layer (protocol abstraction)
     comm/deviceconnection.h
+    comm/protocolplugin.h
+    comm/protocolregistry.h
+    comm/protocolregistry.cpp
+    comm/builtinprotocols.cpp
     comm/mockconnection.h
     comm/mockconnection.cpp
     comm/modbusconnection.h
@@ -136,3 +140,15 @@ if(WIN32 OR APPLE)
         NO_UNSUPPORTED_PLATFORM_ERROR)
     install(SCRIPT ${monitor_deploy_script})
 endif()
+
+# ---------------------------------------------------------------------------
+# 外部协议插件
+#
+# 刻意放在 src/ 这一层做 add_subdirectory：插件产物要落在**可执行文件旁边**的
+# plugins/protocols/ 下，而可执行文件的输出目录正是本层决定的 ——
+# 放在这里就不用去顶层硬编码一个 "src" 路径。
+# ---------------------------------------------------------------------------
+set(MONITOR_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(MONITOR_PROTOCOL_DIR "${CMAKE_CURRENT_BINARY_DIR}/plugins/protocols")
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../plugins" "${CMAKE_CURRENT_BINARY_DIR}/plugins")
+
