@@ -135,7 +135,11 @@ bool DataStorage::createTables()
                        "  high_limit   REAL     NOT NULL,"
                        "  message      TEXT,"
                        "  active       INTEGER  NOT NULL,"
-                       "  acknowledged INTEGER  NOT NULL"
+                       "  acknowledged INTEGER  NOT NULL,"
+                       "  disposition  INTEGER,"
+                       "  handled_by   TEXT,"
+                       "  handled_at   DATETIME,"
+                       "  note         TEXT"
                        ")"),
         QStringLiteral("CREATE TABLE IF NOT EXISTS operations ("
                        "  id       INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -180,6 +184,17 @@ bool DataStorage::createTables()
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("username"), QStringLiteral("TEXT")))
         return false;
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("password"), QStringLiteral("TEXT")))
+        return false;
+
+    // 告警工单闭环：老库的 alarms 表没有处理结论这几列。
+    // 补出来是 NULL —— handled_at 为 NULL 即"未处理"，语义天然正确，不需要回填默认值。
+    if (!ensureColumn(QStringLiteral("alarms"), QStringLiteral("disposition"), QStringLiteral("INTEGER")))
+        return false;
+    if (!ensureColumn(QStringLiteral("alarms"), QStringLiteral("handled_by"), QStringLiteral("TEXT")))
+        return false;
+    if (!ensureColumn(QStringLiteral("alarms"), QStringLiteral("handled_at"), QStringLiteral("DATETIME")))
+        return false;
+    if (!ensureColumn(QStringLiteral("alarms"), QStringLiteral("note"), QStringLiteral("TEXT")))
         return false;
 
     query.exec(QStringLiteral(
@@ -381,8 +396,9 @@ bool DataStorage::insertAlarm(const AlarmRecord &record)
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "INSERT INTO alarms (ts, device, tag, level, value, low_limit, high_limit,"
-        " message, active, acknowledged)"
-        " VALUES (:ts, :device, :tag, :level, :value, :low, :high, :message, :active, :ack)"));
+        " message, active, acknowledged, disposition, handled_by, handled_at, note)"
+        " VALUES (:ts, :device, :tag, :level, :value, :low, :high, :message, :active, :ack,"
+        " :disposition, :handled_by, :handled_at, :note)"));
     query.bindValue(QStringLiteral(":ts"), record.time);
     query.bindValue(QStringLiteral(":device"), record.deviceId);
     query.bindValue(QStringLiteral(":tag"), record.tagId);
@@ -393,6 +409,20 @@ bool DataStorage::insertAlarm(const AlarmRecord &record)
     query.bindValue(QStringLiteral(":message"), record.message);
     query.bindValue(QStringLiteral(":active"), record.active ? 1 : 0);
     query.bindValue(QStringLiteral(":ack"), record.acknowledged ? 1 : 0);
+
+    // 未处理的记录一律写 NULL，而不是把 disposition 的默认值 0（已处理恢复）写进去 ——
+    // 否则老库/未处理的告警在报表里会被算成"已处理"，统计直接失真。
+    if (record.handled()) {
+        query.bindValue(QStringLiteral(":disposition"), int(record.disposition));
+        query.bindValue(QStringLiteral(":handled_by"), record.handledBy);
+        query.bindValue(QStringLiteral(":handled_at"), record.handledAt);
+        query.bindValue(QStringLiteral(":note"), record.handlingNote);
+    } else {
+        query.bindValue(QStringLiteral(":disposition"), QVariant());
+        query.bindValue(QStringLiteral(":handled_by"), QVariant());
+        query.bindValue(QStringLiteral(":handled_at"), QVariant());
+        query.bindValue(QStringLiteral(":note"), QVariant());
+    }
 
     if (!query.exec()) {
         m_lastError = query.lastError().text();
@@ -441,6 +471,38 @@ bool DataStorage::markAlarmAcknowledged(const QString &deviceId, const QString &
     return true;
 }
 
+bool DataStorage::markAlarmHandled(const QString &deviceId,
+                                   const QString &tagId,
+                                   AlarmDisposition disposition,
+                                   const QString &handledBy,
+                                   const QString &note)
+{
+    if (!m_db.isOpen())
+        return false;
+
+    QSqlQuery query(m_db);
+    // 处理必然意味着"已经确认过了"，所以顺手把 acknowledged 也置 1，
+    // 免得出现"已处理但未确认"这种自相矛盾的状态。
+    query.prepare(QStringLiteral(
+        "UPDATE alarms SET disposition = :disposition, handled_by = :handled_by,"
+        " handled_at = :handled_at, note = :note, acknowledged = 1"
+        " WHERE id = (SELECT id FROM alarms WHERE device = :device AND tag = :tag"
+        "             ORDER BY ts DESC LIMIT 1)"));
+    query.bindValue(QStringLiteral(":disposition"), int(disposition));
+    query.bindValue(QStringLiteral(":handled_by"), handledBy);
+    // 处理时刻以落库这一刻为准；与引擎内存里的时刻最多差几毫秒，对 MTTR 无影响。
+    query.bindValue(QStringLiteral(":handled_at"), QDateTime::currentDateTime());
+    query.bindValue(QStringLiteral(":note"), note);
+    query.bindValue(QStringLiteral(":device"), deviceId);
+    query.bindValue(QStringLiteral(":tag"), tagId);
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 QList<AlarmRecord> DataStorage::queryAlarms(const QDateTime &from,
                                             const QDateTime &to,
                                             int limit) const
@@ -451,7 +513,8 @@ QList<AlarmRecord> DataStorage::queryAlarms(const QDateTime &from,
 
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
-        "SELECT ts, device, tag, level, value, low_limit, high_limit, message, active, acknowledged"
+        "SELECT ts, device, tag, level, value, low_limit, high_limit, message, active, acknowledged,"
+        " disposition, handled_by, handled_at, note"
         " FROM alarms WHERE ts BETWEEN :from AND :to ORDER BY ts DESC LIMIT :limit"));
     query.bindValue(QStringLiteral(":from"), from);
     query.bindValue(QStringLiteral(":to"), to);
@@ -474,6 +537,12 @@ QList<AlarmRecord> DataStorage::queryAlarms(const QDateTime &from,
         record.message = query.value(7).toString();
         record.active = query.value(8).toInt() != 0;
         record.acknowledged = query.value(9).toInt() != 0;
+        // 老库补出来的列是 NULL：toInt(0) 得到 0（已处理恢复），但 handledAt 无效，
+        // 所以 handled() 仍然是 false —— 判断"是否处理过"永远以 handled_at 为准。
+        record.disposition = static_cast<AlarmDisposition>(query.value(10).toInt(0));
+        record.handledBy = query.value(11).toString();
+        record.handledAt = query.value(12).toDateTime();
+        record.handlingNote = query.value(13).toString();
         result.append(record);
     }
     return result;
@@ -674,8 +743,17 @@ QList<DataStorage::DeviceStats> DataStorage::queryDeviceStats(const QDateTime &f
     }
 
     QSqlQuery alarmQuery(m_db);
+    // 一次查询取齐告警数、已处理数与该设备的平均处理时长：
+    //   - SUM(CASE ...) 数"已处理"（handled_at 非空）
+    //   - AVG(CASE ...) 只对已处理的样本求平均（CASE 里的 NULL 会被 AVG 自动忽略）
+    //   - julianday 差 × 86400000 = 毫秒
+    // 拆成三条 SQL 当然也能写，但三次全表扫描换不来任何可读性。
     alarmQuery.prepare(QStringLiteral(
-        "SELECT device, COUNT(*) FROM alarms WHERE ts BETWEEN :from AND :to GROUP BY device"));
+        "SELECT device, COUNT(*),"
+        "       SUM(CASE WHEN handled_at IS NOT NULL THEN 1 ELSE 0 END),"
+        "       AVG(CASE WHEN handled_at IS NOT NULL"
+        "                THEN (julianday(handled_at) - julianday(ts)) * 86400000.0 END)"
+        " FROM alarms WHERE ts BETWEEN :from AND :to GROUP BY device"));
     alarmQuery.bindValue(QStringLiteral(":from"), from);
     alarmQuery.bindValue(QStringLiteral(":to"), to);
     if (alarmQuery.exec()) {
@@ -684,6 +762,12 @@ QList<DataStorage::DeviceStats> DataStorage::queryDeviceStats(const QDateTime &f
             DeviceStats stats = byDevice.value(deviceId);
             stats.deviceId = deviceId;
             stats.alarmCount = alarmQuery.value(1).toInt();
+            stats.handledCount = alarmQuery.value(2).toInt();
+            // 没有任何已处理样本时 AVG 返回 NULL → toLongLong() 得 0，
+            // 这里统一翻成 -1，界面据此显示"—"而不是"0 ms"。
+            stats.avgHandleMs = alarmQuery.value(3).isNull()
+                                    ? -1
+                                    : alarmQuery.value(3).toLongLong();
             byDevice.insert(deviceId, stats);
         }
     }

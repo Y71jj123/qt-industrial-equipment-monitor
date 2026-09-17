@@ -29,18 +29,15 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 
 ## P0 — 补齐业务闭环（最影响"像不像真工业软件"）
 
-### P0-1 告警 → 工单闭环
+### P0-1 告警 → 工单闭环 ✅ 已完成
 
 - **做什么**：告警确认不再是"点一下就完了"，而是必须录入处理结论（处理人 / 处理动作 / 备注），
   生成处理记录并落库；据此统计 **MTTR（平均修复时长）**、按设备 / 按班次的告警与处理统计。
-- **为什么**：现在只有"确认 / 消警"两个状态，没有闭环。现场考核的核心指标就是 MTTR，
-  没有它，告警模块就只是个高亮列表。
-- **落点**：
-  - `core/alarmengine.h` —— `AlarmRecord` 增加"已处理"态与处理信息（或独立 `AlarmHandling` 结构）
-  - `storage/datastorage.cpp` —— `alarms` 表补列（**记得同步 `ensureColumn()` 迁移**），
-    或新增 `alarm_handling` 表（一条告警可多次处理时更合适）
-  - `ui/alarmpanel.*` —— 确认时弹出处理对话框；`ui/overviewpanel.*` —— 增加 MTTR 卡
-- **验收**：能对活动告警录入处理结论；报表页能导出 MTTR 与处理明细。
+- **为什么**：现场考核的核心指标就是 MTTR。只有告警条数、没有处理闭环，告警模块就只是个高亮列表。
+- **落点**：`core/alarmengine.*`（`AlarmDisposition` + `handleAlarm` + MTTR）、
+  `storage/datastorage.*`（`alarms` 补 `disposition/handled_by/handled_at/note` 四列）、
+  `ui/alarmpanel.*`（处理对话框）、`ui/overviewpanel.*`（MTTR 卡）、`ui/reportpanel.*`（MTTR 列）。
+- **验收**：✅ 能对活动告警录入处理结论；报表页能出 MTTR 与处理明细；已恢复的记录拒绝再处理。
 
 ### P0-2 Modbus 连续寄存器块读 + 串口 RTU
 
@@ -107,9 +104,15 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | --- | --- | --- |
 | v0.5 | 双主题 / 告警通知体系 / 采集线程化 / 曲线交互 / 配置导入导出 | ✅ 已完成 |
 | v0.6 | 总览仪表盘 / MQTT 接入鉴权 | ✅ 已完成 |
-| v0.7 | P0 三项（工单闭环 / 块读+RTU / 断线补传） | 待开始 |
+| v0.7 | P0 三项（工单闭环 / 块读+RTU / 断线补传） | 🚧 进行中：**P0-1 已完成** |
 | v0.8 | P1 三项（插件化 / 测试+CI / 性能基线） | 待开始 |
 | v1.0 | P2 完成，可交付现场试用 | 待开始 |
+
+### 已完成项的落地记录
+
+| 项 | 落地内容 | 验证方式 |
+| --- | --- | --- |
+| P0-1 工单闭环 | `AlarmDisposition` + `AlarmRecord` 处理字段；`AlarmEngine::handleAlarm/averageHandleDurationMs`；`alarms` 表补 4 列（`ensureColumn` 迁移）；告警面板「处理选中…」对话框（强制填说明）；总览页 KPI 墙扩到 2×5 加「已处理告警 / MTTR」；报表页加「已处理 / MTTR」列与 Excel 处理字段；处理动作写操作留痕 | 临时控制台测试 **32 项断言全通过**（引擎状态机 + 数据库往返 + MTTR SQL 实测 120005ms ≈ 期望 120000ms） |
 
 ---
 

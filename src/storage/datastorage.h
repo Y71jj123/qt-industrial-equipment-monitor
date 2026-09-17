@@ -60,6 +60,8 @@ public:
         int alarmCount = 0;     ///< 告警次数
         QDateTime firstSample;  ///< 首次采样时间
         QDateTime lastSample;   ///< 最后采样时间
+        int handledCount = 0;   ///< 已录入处理结论的告警条数
+        qint64 avgHandleMs = -1; ///< 该设备的平均处理时长（毫秒），无样本为 -1
     };
 
     explicit DataStorage(QObject *parent = nullptr, const QString &databasePath = QString());
@@ -112,6 +114,16 @@ public:
 
     /// 把某点位最近一条告警标记为已确认（acknowledged = 1）。
     bool markAlarmAcknowledged(const QString &deviceId, const QString &tagId);
+
+    /// 把某点位最近一条告警**补上处理结论**（工单闭环）。
+    ///
+    /// 与 markAlarmAcknowledged 分开是刻意的：确认只改一个布尔，
+    /// 处理要写处理人 / 结论 / 分类三项，混在一个方法里以后必然要加参数、改到调用方。
+    bool markAlarmHandled(const QString &deviceId,
+                          const QString &tagId,
+                          AlarmDisposition disposition,
+                          const QString &handledBy,
+                          const QString &note);
 
     QList<AlarmRecord> queryAlarms(const QDateTime &from,
                                    const QDateTime &to,
