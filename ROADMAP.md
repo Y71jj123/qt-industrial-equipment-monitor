@@ -106,7 +106,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 ## P2 — 产品化包装（让项目"看起来完整"）
 
 - **P2-1** `cmake --install` + CPack 生成安装包（NSIS / ZIP），附开始菜单快捷方式。 ✅ 已完成（ZIP）
-- **P2-2** 运行截图 / 动图 + 架构图补全（README 现在只有 mermaid 流程图，缺真实界面）。
+- **P2-2** 运行截图 / 动图 + 架构图补全（README 现在只有 mermaid 流程图，缺真实界面）。 ✅ 已完成
 - **P2-3** 日志滚动（按大小切分 + 保留 N 个）+ 崩溃转储，避免长期运行把磁盘写满。 ✅ 已完成
 
 ---
@@ -130,6 +130,25 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 三个 QTest 套件共 22 个用例；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **3/3 套件全绿**；CI 配置就绪 |
 | P2-3 日志滚动 + 崩溃转储 | `Log::init(path, maxBytes, maxFiles)` 按大小滚动（默认 2MB × 5 份，超限丢最老）；新增 `utils/crashhandler.*`：Windows 走 `SetUnhandledExceptionFilter` + `MiniDumpWriteDump` 产 `.dmp`，其他平台走信号处理器产带栈的 `.txt`；`main.cpp` 启动即安装 | 临时验证程序 **13 项断言全 PASS**；**真的触发一次空指针崩溃**，产出 67,927 字节的 minidump |
 | P2-1 安装包 | `install(TARGETS)` + `qt_generate_deploy_app_script(NO_TRANSLATIONS)` 自动带上 Qt 运行时；顶层接 CPack（默认 ZIP，可切 NSIS）；README 补打包说明 | **解压 ZIP 到全新目录、PATH 里不含 Qt 直接运行成功**（EXITCODE=124 = 活满 6 秒）；包内 10 项关键文件齐全；33 MB |
+| P2-2 运行截图 | 写了一个截图夹具（真实构造主窗口 + 3 台 Mock 设备跑满 60 秒窗口），抓下 10 个页签存进 `docs/screenshots/`，README 新增「界面预览」 | 10 张 PNG（共 1.6 MB）；顺带**发现并修掉一个真 bug**（见下） |
+
+### P2-2 顺带修掉的真 bug：信号屏蔽作用域盖住了选中还原
+
+`MainWindow::rebuildDeviceTree()` 里用 `QSignalBlocker` 屏蔽重建期间的信号，
+但 blocker 是 RAII、**作用域一直延伸到函数末尾**，把末尾还原选中时的
+`m_deviceTree->setCurrentItem(target)` 也一起屏蔽了 —— 而那一行的注释还写着
+"信号已解除屏蔽，这里会正常同步右侧面板"。
+
+**后果**：每次重建设备树（分组变化、导入配置等）之后，树上显示着选中某台设备，
+但 `onDeviceTreeSelectionChanged` 从未触发 → **趋势曲线与设备详情面板收不到通知**。
+最直观的症状就是：**树上明明选中着设备，趋势曲线却是空的**（首次启动时尤其明显，
+因为构造期的 rebuildDeviceTree 就已经把自动选中那一次同步吃掉了）。
+
+**修法**：把 `QSignalBlocker` 收进一个只包住"清空 + 重建"的内层块，
+让它在还原选中之前析构。
+
+**验证（前后对比，不是"看着对"）**：截图夹具里**不做任何选中操作**，直接读图表内部状态 ——
+修复前 `series=0`（空图），修复后 `series=5`、`axisX` 有正常的 60 秒窗口、单条曲线 120 个点。
 
 ---
 

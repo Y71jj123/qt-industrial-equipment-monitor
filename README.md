@@ -14,6 +14,26 @@
 
 典型场景：产线设备集中监控、无人值守站点巡检、设备台账与运维记录管理。
 
+## 界面预览
+
+下面的截图是程序**真实运行**时抓的（不是设计稿）：3 台模拟设备在线、5 类告警在活动、一条已录入处理结论。
+
+![总览仪表盘](docs/screenshots/overview.png)
+
+**总览仪表盘**：KPI 数字墙（设备 / 在线率 / 活动告警 / MTTR / 采样量）+ 每台设备一张状态卡 + 当前活动告警明细；点设备卡可直接下钻到该设备。
+
+| ![实时数据](docs/screenshots/realtime.png) | ![趋势曲线](docs/screenshots/trend.png) | ![告警中心](docs/screenshots/alarms.png) |
+| --- | --- | --- |
+| 实时数据（每设备独立线程采集） | 趋势曲线（缩放 / 平移 / 悬停准星） | 告警中心（状态四态 + 处理结论） |
+
+| ![告警历史](docs/screenshots/alarm-history.png) | ![历史查询](docs/screenshots/history.png) | ![报表统计](docs/screenshots/report.png) |
+| --- | --- | --- |
+| 告警历史（多条件查询） | 历史查询（表格 + 曲线 + CSV） | 报表统计（含已处理数与 MTTR） |
+
+| ![远程控制](docs/screenshots/control.png) | ![规则配置](docs/screenshots/rules.png) | ![设备详情](docs/screenshots/device-detail.png) |
+| --- | --- | --- |
+| 远程控制（二次确认 + 留痕） | 规则配置 | 设备详情 |
+
 ## 核心功能
 
 - [x] 设备接入管理：增删改设备，配置 IP/端口/从站地址，**支持分组**，断线自动重连（指数退避 1s→30s）
@@ -112,6 +132,7 @@ qt-industrial-equipment-monitor/
 ├── README.md
 ├── tools/                  # 零依赖本地模拟器（Modbus 从站 / MQTT 发布）
 ├── tests/                  # 单元测试（QTest；链接 monitor_core —— 被测的就是产品跑的那份代码）
+├── docs/screenshots/       # 真实运行截图
 ├── .github/workflows/      # CI：构建 + 零警告门槛 + ctest
 └── src/
     ├── CMakeLists.txt      # 产出两个目标：monitor_core（静态库，核心逻辑）+ 可执行文件（仅 main）
@@ -290,7 +311,7 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 - [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
 - [ ] v0.7 业务闭环：告警工单与 MTTR（✅ 已完成）、断线补传与数据不丢（✅ 已完成）、Modbus 块读 + 串口 RTU
 - [ ] v0.8 技术深度：协议插件化、单元测试 + CI（✅ 已完成）、性能基线报告
-- [ ] v1.0 产品化：安装包（✅ 已完成）、界面截图、日志滚动与崩溃转储（✅ 已完成）
+- [x] v1.0 产品化：安装包（✅）、运行截图（✅）、日志滚动与崩溃转储（✅）
 
 ## 许可
 
