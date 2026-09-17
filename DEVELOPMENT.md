@@ -25,10 +25,27 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
 ```
 
 - 必须做到**零错误、零警告**（编译带 `-Wall -Wextra`）。
-- 新增源文件要同时加进 `src/CMakeLists.txt` 的 `PROJECT_SOURCES`。
+- 新增源文件要同时加进 `src/CMakeLists.txt` 的 `PROJECT_SOURCES` ——
+  它会自动进入 `monitor_core` 静态库，主程序和单元测试都能用到。
 - 若链接报 `Permission denied`，说明程序还开着：
   `MSYS_NO_PATHCONV=1 taskkill /IM "qt-industrial-equipment-monitor.exe" /F`
-- **不要运行 GUI**（无人值守环境会卡住），编译通过即可。
+- **不要运行 GUI**（无人值守环境会卡住），编译通过即可；逻辑正确性用下面的单元测试守。
+
+**单元测试**（改动了 `core/` `storage/` `utils/` 的逻辑就应该跑一遍）：
+
+```bash
+E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
+```
+
+- 三个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR）、`tst_datastorage`
+  （告警 NULL 语义 / 统计口径 / 溢出队列与补传顺序）、`tst_configio`（配置往返）。
+- 测试**链接 `monitor_core`**，也就是产品实际运行的那份代码；不要另外编译一份源码来测。
+- 新增测试文件后要在 `tests/CMakeLists.txt` 里加一行 `monitor_add_test(<名字>)`。
+- 测试一律用 `QTEST_GUILESS_MAIN`（QCoreApplication）—— CI 没有显示器，
+  `QTEST_MAIN` 会去要平台插件然后失败。
+- ⚠️ Windows 上 ctest 跑测试若报 `0xc0000135`（找不到 DLL），不是测试写错了：
+  `tests/CMakeLists.txt` 已经用 `ENVIRONMENT_MODIFICATION` 把 Qt 的 bin 目录加进测试进程 PATH，
+  改这块时别手拼 `PATH=`（Windows 的 `;` 会被 CMake 当列表分隔符切碎）。
 
 ## 代码规范
 

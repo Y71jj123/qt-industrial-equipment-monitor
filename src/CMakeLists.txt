@@ -61,35 +61,51 @@ set(PROJECT_SOURCES
     utils/excelexporter.cpp
 )
 
-add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+# ---------------------------------------------------------------------------
+# 核心库：除 main.cpp 外的全部源码。
+#
+# 拆成库不只是为了整洁 —— 单元测试要能直接链接它。否则测试只能把源码再编译一遍，
+# 于是"测试编译的代码"和"程序实际跑的代码"会变成两份，测试的保证也就打了折。
+# ---------------------------------------------------------------------------
+list(REMOVE_ITEM PROJECT_SOURCES main.cpp)
+
+add_library(monitor_core STATIC ${PROJECT_SOURCES})
 
 # Allow "core/xxx.h" style includes from within src/
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# PUBLIC：链接本库的目标（主程序 / 测试）都要能用同样的 include 形式
+target_include_directories(monitor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(${PROJECT_NAME} PRIVATE
+target_link_libraries(monitor_core PUBLIC
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Sql
     Qt${QT_VERSION_MAJOR}::Network
 )
 
 if(Qt${QT_VERSION_MAJOR}Charts_FOUND)
-    target_link_libraries(${PROJECT_NAME} PRIVATE Qt${QT_VERSION_MAJOR}::Charts)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_QT_CHARTS)
+    target_link_libraries(monitor_core PUBLIC Qt${QT_VERSION_MAJOR}::Charts)
+    target_compile_definitions(monitor_core PUBLIC HAVE_QT_CHARTS)
 endif()
 
 # 应用名与版本号（从顶层 project() 继承），供源码中的 APP_NAME / APP_VERSION 使用
-target_compile_definitions(${PROJECT_NAME} PRIVATE
+target_compile_definitions(monitor_core PUBLIC
     APP_NAME="${PROJECT_NAME}"
     APP_VERSION="${PROJECT_VERSION}"
 )
 
-# MSVC needs this to read UTF-8 source files correctly (Chinese literals).
+# 警告开关用 PUBLIC 传出去：测试代码也按"零警告"标准编译，
+# 否则很容易出现"产品代码干净、测试代码一堆警告"的双标。
 if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+    target_compile_options(monitor_core PUBLIC /utf-8)
+    target_compile_options(monitor_core PUBLIC /W4)
 else()
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
+    target_compile_options(monitor_core PUBLIC -Wall -Wextra)
 endif()
+
+# ---------------------------------------------------------------------------
+# 可执行文件：只剩 main.cpp，其余逻辑全部来自 monitor_core
+# ---------------------------------------------------------------------------
+add_executable(${PROJECT_NAME} main.cpp)
+target_link_libraries(${PROJECT_NAME} PRIVATE monitor_core)
 
 # Windows: no console window in release builds
 if(WIN32 AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")

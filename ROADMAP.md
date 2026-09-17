@@ -79,13 +79,21 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 新增协议 = 丢一个 so/dll 进去，主程序零改动、零重编译。
 **验收**：新增一个示例协议插件，不重新编译主程序即可在"添加设备"里选到。
 
-### P1-2 单元测试 + CI
+### P1-2 单元测试 + CI ✅ 已完成
 
-- `QTest` 覆盖**纯逻辑**部分：告警引擎状态机（正常→越限→恢复→再越限）、
-  `TagPoint` 工程量换算（含开关量不乘 scale）、`ConfigIo` 配置往返、
-  MQTT CONNECT 报文字节构造（把 `sendConnect` 拆出可测的纯函数）。
-- GitHub Actions：push 时自动配置 → 构建 → 跑测试，`-Wall -Wextra` 警告视为失败。
-- **验收**：`ctest` 全绿，PR 上能看到 CI 徽章。
+- **做什么**：`QTest` 覆盖纯逻辑：告警引擎状态机（正常→越限→恢复→再越限）、
+  工单闭环与 MTTR、`TagPoint` 工程量换算、`ConfigIo` 配置往返、
+  采样溢出队列与补传顺序；GitHub Actions 在每次 push / PR 上构建 + 零警告门槛 + 跑测试。
+- **为什么**：前面几项改动都在"数据正确性"上做文章（NULL 语义、补传顺序、MTTR 换算），
+  这些东西靠手点界面验证一次就忘了；只有测试能防止以后被改坏。
+- **落点**：`src/CMakeLists.txt`（拆出 `monitor_core` 静态库 + 仅含 main 的可执行文件）、
+  `tests/`（`tst_alarmengine` / `tst_datastorage` / `tst_configio`）、
+  `CMakeLists.txt`（`include(CTest)` + `add_subdirectory(tests)`）、`.github/workflows/build.yml`。
+- **验收**：✅ `ctest --test-dir build --output-on-failure` → **3/3 套件全绿**。
+- **踩坑记录**：Windows 上 ctest 直接跑测试会以 `0xc0000135`（找不到 DLL）整体失败，
+  而人肉双击又是好的 —— 极易误判成"测试写错了"。解法是在 `tests/CMakeLists.txt` 里用
+  `ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:<Qt bin>"` 把 Qt 的 bin 目录塞进测试进程
+  （**不能手拼 PATH**：Windows 的 PATH 分隔符是 `;`，手拼会被 CMake 当列表分隔符切碎）。
 
 ### P1-3 性能基线报告
 
@@ -110,7 +118,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | v0.5 | 双主题 / 告警通知体系 / 采集线程化 / 曲线交互 / 配置导入导出 | ✅ 已完成 |
 | v0.6 | 总览仪表盘 / MQTT 接入鉴权 | ✅ 已完成 |
 | v0.7 | P0 三项（工单闭环 / 块读+RTU / 断线补传） | 🚧 进行中：**P0-1、P0-3 已完成**；P0-2 待定（缺 Qt SerialPort） |
-| v0.8 | P1 三项（插件化 / 测试+CI / 性能基线） | 待开始 |
+| v0.8 | P1 三项（插件化 / 测试+CI / 性能基线） | 🚧 进行中：**P1-2 已完成** |
 | v1.0 | P2 完成，可交付现场试用 | 待开始 |
 
 ### 已完成项的落地记录
@@ -119,6 +127,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | --- | --- | --- |
 | P0-1 工单闭环 | `AlarmDisposition` + `AlarmRecord` 处理字段；`AlarmEngine::handleAlarm/averageHandleDurationMs`；`alarms` 表补 4 列（`ensureColumn` 迁移）；告警面板「处理选中…」对话框（强制填说明）；总览页 KPI 墙扩到 2×5 加「已处理告警 / MTTR」；报表页加「已处理 / MTTR」列与 Excel 处理字段；处理动作写操作留痕 | 临时控制台测试 **32 项断言全通过**（引擎状态机 + 数据库往返 + MTTR SQL 实测 120005ms ≈ 期望 120000ms） |
 | P0-3 采样溢出队列 | 落库失败**不再丢弃**，改为 JSON Lines 追加写盘（`<db>.pending.jsonl`，64MB 闸门）；启动时按时间升序补传，**提交成功后才删队列文件**；`insertSample` 不再因"库未打开"而拒绝采样 | 临时控制台测试 **13 项断言全通过**（含用独立连接按 `rowid` 校验补传的物理写入顺序 = 时间升序；坏行容错） |
+| P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 三个 QTest 套件共 22 个用例；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **3/3 套件全绿**；CI 配置就绪 |
 
 ---
 
