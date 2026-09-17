@@ -1,5 +1,6 @@
 #include "ui/mainwindow.h"
 
+#include "comm/protocolregistry.h"
 #include "core/acquisitionscheduler.h"
 #include "storage/datastorage.h"
 #include "ui/advancedchartview.h"
@@ -644,7 +645,7 @@ void MainWindow::restoreOrSeedDevices()
         info.name = QStringLiteral("模拟设备 1");
         info.host = QStringLiteral("127.0.0.1");
         info.port = 502;
-        info.protocol = DeviceProtocol::Mock;
+        info.protocolId = ProtocolRegistry::defaultProtocolId();
         info.points = defaultTagPoints();
 
         const QString id = m_deviceManager->addDevice(info);
@@ -790,7 +791,7 @@ void MainWindow::updateDeviceTreeItem(const QString &deviceId)
     item->setToolTip(0, QStringLiteral("%1\n分组：%2\n协议：%3\n地址：%4:%5\n状态：%6\nID：%7")
                             .arg(info.name.isEmpty() ? deviceId : info.name,
                                  info.groupName(),
-                                 protocolName(info.protocol),
+                                 protocolName(info.protocolId),
                                  info.host)
                             .arg(info.port)
                             .arg(deviceStateName(state), info.id));

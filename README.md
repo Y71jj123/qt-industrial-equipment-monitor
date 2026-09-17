@@ -54,7 +54,8 @@
 - [x] 配置管理：**设备 / 分组 / 规则一键导出导入（JSON）**
 - [x] 界面主题：**浅色 / 深色双主题一键切换**，矢量图标，设置持久化
 - [x] **MQTT 接入鉴权**：设备可配置用户名 / 密码，CONNECT 报文带 User Name / Password 字段；broker 拒绝时按返回码给出明确原因（如"用户名或密码错误"）
-- [x] **单元测试 + CI**：`QTest` 覆盖告警状态机 / 工单闭环与 MTTR / 存储往返与溢出补传 / 配置往返，`ctest` 一行跑完；GitHub Actions 自动构建 + **零警告**门槛 + 跑测试
+- [x] **协议插件化**：`createConnection()` 里没有任何协议分支 —— 协议由**注册表**提供，内置协议与外部插件平权；外部插件是独立动态库，丢进 `plugins/protocols/` 即生效（**新增协议零重编译核心代码**）。设备对话框的协议列表与字段可见性也由插件的 `ProtocolTraits` 声明驱动
+- [x] **单元测试 + CI**：`QTest` 覆盖告警状态机 / 工单闭环与 MTTR / 存储往返与溢出补传 / 配置往返 / 协议注册表，`ctest` 一行跑完；GitHub Actions 自动构建 + **零警告**门槛 + 跑测试
 
 > 全部核心功能已落地，并完成多轮升级：界面视觉 / 告警体验 / 线程化架构 / 功能增强 → 总览仪表盘 / MQTT 接入鉴权 → **告警工单闭环与 MTTR**。
 
@@ -130,8 +131,10 @@ qt-industrial-equipment-monitor/
 ├── CLAUDE.md               # AI 编码助手项目上下文（约定 + 已知坑）
 ├── ROADMAP.md              # 迭代计划（落点文件 + 验收标准 + 里程碑）
 ├── README.md
-├── tools/                  # 零依赖本地模拟器（Modbus 从站 / MQTT 发布）
+├── tools/                  # 零依赖本地模拟器（Modbus 从站 / MQTT 发布 / HTTP JSON 桩）
 ├── tests/                  # 单元测试（QTest；链接 monitor_core —— 被测的就是产品跑的那份代码）
+├── plugins/                # **外部协议插件**（各自编成独立动态库，产物落到 exe 旁的 plugins/protocols/）
+│   └── http_json/          # HTTP / JSON 数据源插件 —— 也是"新增协议要写多少东西"的样板
 ├── docs/screenshots/       # 真实运行截图
 ├── .github/workflows/      # CI：构建 + 零警告门槛 + ctest
 └── src/
@@ -154,12 +157,15 @@ qt-industrial-equipment-monitor/
     │   └── reportpanel.*       报表统计 + Excel 导出
     ├── comm/               # 通信层
     │   ├── deviceconnection.h  协议抽象接口（含 configure 入口）
+    │   ├── protocolplugin.h    **协议插件接口**（元数据 + traits + 连接工厂）
+    │   ├── protocolregistry.*  协议注册表：协议 id → 插件（内置与外部插件一视同仁）
+    │   ├── builtinprotocols.cpp 三个内置协议以插件形式注册（mock / modbus_tcp / mqtt）
     │   ├── mockconnection.*    模拟数据源
     │   ├── modbusconnection.*  Modbus TCP（手写 MBAP / PDU）
     │   └── mqttconnection.*    MQTT 3.1.1（手写最小子集）
     ├── core/               # 设备模型、采集调度（线程化 + 自动重连）、告警引擎
     ├── storage/            # SQLite：采样 / 告警 / 操作 / 设备台账（批量写入）
-    └── utils/              # 日志（线程安全）、配置导入导出、Excel 导出
+    └── utils/              # 日志（进程内唯一 + 滚动）、配置导入导出、Excel 导出、崩溃转储
 ```
 
 ## 构建与运行
@@ -214,8 +220,9 @@ cd build-vscode && cpack -G ZIP
 
 ```
 qt-industrial-equipment-monitor-<版本>-win64/
-├── bin/      可执行文件 + Qt6*.dll + qt.conf
-├── plugins/  platforms/qwindows.dll、sqldrivers/qsqlite.dll 等
+├── bin/                      可执行文件 + Qt6*.dll + qt.conf
+├── plugins/                  平台插件 / SQL 驱动
+│   └── protocols/            **协议插件**（外部协议动态库放这里，程序会自动加载）
 ├── README.md
 └── LICENSE
 ```
@@ -291,6 +298,45 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 > 这两个脚本同时也是**协议格式的活文档** —— 想知道项目期望什么报文，看它们即可。
 > MQTT 鉴权采用 3.1.1 的明文 User Name / Password 字段，不加密时等同于明文口令，仅适合内网环境。
 
+## 新增一种协议要写多少东西
+
+这是"协议插件化"最直接的检验。**答案是一个头文件、一个 cpp、四行 CMake，核心代码零改动。**
+
+```cpp
+// 1) 实现连接（继承 DeviceConnection，只做收发）
+class MyConnection : public DeviceConnection { /* open/close/readTag/writeTag */ };
+
+// 2) 实现插件（元数据 + 工厂）—— 就这十几行
+class MyProtocolPlugin : public QObject, public IProtocolPlugin
+{
+    Q_OBJECT
+    Q_PLUGIN_METADATA(IID MonitorProtocolPlugin_iid)
+    Q_INTERFACES(IProtocolPlugin)
+public:
+    QString id() const override { return QStringLiteral("my_protocol"); }
+    QString displayName() const override { return QStringLiteral("我的协议"); }
+    quint16 defaultPort() const override { return 9999; }
+    ProtocolTraits traits() const override { ProtocolTraits t; t.usesSlaveId = true; return t; }
+    DeviceConnection *create() const override { return new MyConnection(); }
+};
+```
+
+```cmake
+add_library(monitor_protocol_my MODULE myprotocol.cpp)
+target_include_directories(monitor_protocol_my PRIVATE ${MONITOR_SRC_DIR})
+target_link_libraries(monitor_protocol_my PRIVATE monitor_core Qt6::Network)
+set_target_properties(monitor_protocol_my PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${MONITOR_PROTOCOL_DIR}")
+```
+
+编出来把 `.dll` 丢进 `<exe>/plugins/protocols/` 即可 —— **主程序不需要重新编译**，
+设备对话框里会自动多出一个选项，字段可见性由你声明的 `traits` 决定。
+
+> 完整可运行的样板见 [`plugins/http_json/`](./plugins/http_json)。它同时是个有用的插件：
+> 很多现场网关不给 Modbus，只暴露一个返回 JSON 的 HTTP 接口。
+>
+> **别把某个插件的 `.dll` 删掉试试**：程序照样正常启动，只是协议列表里少一项 ——
+> 这就是"可插拔"的验收方式。
+
 ## 开发约定
 
 - 命名：类名大驼峰 `DeviceManager`，函数小驼峰 `readHoldingRegister()`，成员变量 `m_` 前缀
@@ -310,7 +356,7 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 - [x] v0.5 体验升级：双主题视觉、告警通知体系、采集线程化、曲线交互、配置导入导出、Excel 报表
 - [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
 - [ ] v0.7 业务闭环：告警工单与 MTTR（✅ 已完成）、断线补传与数据不丢（✅ 已完成）、Modbus 块读 + 串口 RTU
-- [ ] v0.8 技术深度：协议插件化、单元测试 + CI（✅ 已完成）、性能基线报告
+- [ ] v0.8 技术深度：协议插件化（✅ 已完成）、单元测试 + CI（✅ 已完成）、性能基线报告
 - [x] v1.0 产品化：安装包（✅）、运行截图（✅）、日志滚动与崩溃转储（✅）
 
 ## 许可

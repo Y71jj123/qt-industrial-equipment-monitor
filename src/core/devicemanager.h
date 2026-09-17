@@ -5,14 +5,6 @@
 #include <QObject>
 #include <QString>
 
-/// 设备通信协议类型。
-enum class DeviceProtocol
-{
-    Mock,      ///< 模拟设备：内置数据发生器，无硬件也能跑通全流程
-    ModbusTcp, ///< Modbus TCP：PLC / 仪表最常用的工业现场协议
-    Mqtt       ///< MQTT：物联网网关常用的订阅 / 上报协议
-};
-
 /// 设备状态（三态）。
 enum class DeviceState
 {
@@ -58,12 +50,17 @@ struct DeviceInfo
     bool online = false;           ///< 当前是否在线
     bool fault = false;            ///< 在线但通信异常
 
-    DeviceProtocol protocol = DeviceProtocol::Mock; ///< 通信协议类型
-    QString mqttTopic;             ///< MQTT 订阅主题（protocol == Mqtt 时使用）
+    /// 通信协议 id（对应协议注册表里的 IProtocolPlugin::id，如 `modbus_tcp`）。
+    ///
+    /// 这里刻意用字符串而不是枚举：协议是**可插拔**的 —— 外部插件在编译期之后
+    /// 才会被放进 `plugins/protocols/`，枚举根本没法表达一个当时还不存在的类型。
+    QString protocolId = QStringLiteral("mock");
+
+    QString mqttTopic;             ///< MQTT 订阅主题（usesTopic 的协议使用）
     QList<TagPoint> points;        ///< 点位表（为空时按 defaultTagPoints() 处理）
     QString group;                 ///< 所属分组（空 = 默认分组）
 
-    /// MQTT 接入账号 / 密码（protocol == Mqtt 时使用）。
+    /// MQTT 接入账号 / 密码（usesCredentials 的协议使用）。
     ///
     /// 两者都为空即匿名接入 —— 这是绝大多数内网 broker 的默认配置，
     /// 所以不设默认账号，宁可空着也不去猜一个"admin"。
@@ -72,11 +69,10 @@ struct DeviceInfo
     QString username;
     QString password;
 
-    /// 是否需要带账号接入（MQTT 且填了用户名）。
-    bool hasCredentials() const
-    {
-        return protocol == DeviceProtocol::Mqtt && !username.isEmpty();
-    }
+    /// 是否要带账号接入（填了用户名即算）。
+    /// 协议该不该显示账号输入框由协议注册表的 ProtocolTraits 决定，
+    /// 不在这里按协议名硬判断。
+    bool hasCredentials() const { return !username.isEmpty(); }
 
     /// 所属分组名，永不为空 —— 界面直接拿它显示，不必到处判空。
     QString groupName() const { return group.isEmpty() ? defaultGroupName() : group; }
@@ -90,11 +86,12 @@ struct DeviceInfo
     }
 };
 
-/// 协议的中文名，用于界面展示。
-QString protocolName(DeviceProtocol protocol);
+/// 协议显示名。数据源是协议注册表 —— **插件注册什么就显示什么**，
+/// 所以编译期之后才放进来的外部插件，界面照样能正确显示。
+QString protocolName(const QString &protocolId);
 
-/// 协议对应的默认端口。
-quint16 defaultPortForProtocol(DeviceProtocol protocol);
+/// 协议默认端口；未注册的协议返回 0（调用方据此跳过"自动填端口"）。
+quint16 defaultPortForProtocol(const QString &protocolId);
 
 /// 默认点位表：既是模拟设备的数据源，也作为新建真实设备时的点位模板。
 QList<TagPoint> defaultTagPoints();

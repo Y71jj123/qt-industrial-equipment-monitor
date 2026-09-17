@@ -75,7 +75,7 @@ void DeviceDetailPanel::setDevice(const QString &deviceId)
     const DeviceInfo info = m_manager->device(deviceId);
 
     m_title->setText(info.name.isEmpty() ? deviceId : info.name);
-    m_protocol->setText(protocolName(info.protocol));
+    m_protocol->setText(protocolName(info.protocolId));
     m_endpoint->setText(QStringLiteral("%1:%2").arg(info.host).arg(info.port));
     m_interval->setText(QStringLiteral("%1 ms").arg(info.pollIntervalMs));
 

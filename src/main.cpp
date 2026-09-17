@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QStandardPaths>
 
+#include "comm/protocolregistry.h"
 #include "core/alarmengine.h"
 #include "core/devicemanager.h"
 #include "storage/datastorage.h"
@@ -31,6 +32,16 @@ int main(int argc, char *argv[])
     // 放在日志之后安装，这样崩溃前最后几条日志一定已经在盘上了。
     CrashHandler::install(QDir(dataDir).filePath(QStringLiteral("dumps")));
     Log::info(QStringLiteral("崩溃转储目录：%1").arg(CrashHandler::dumpDirectory()));
+
+    // 协议：先注册编译进主程序的三个内置协议，再扫描外部插件目录。
+    // 必须赶在任何设备开始采集之前完成 —— 采集调度器建连接时只会问注册表，
+    // 这一步漏了，设备会因为"协议不可用"起不来。
+    registerBuiltinProtocols();
+    const int externalPlugins = ProtocolRegistry::instance().loadPluginsFromStandardLocations();
+    Log::info(QStringLiteral("协议就绪：%1 个（其中外部插件 %2 个）｜ %3")
+                  .arg(ProtocolRegistry::instance().ids().size())
+                  .arg(externalPlugins)
+                  .arg(ProtocolRegistry::instance().ids().join(QStringLiteral(", "))));
 
     // 登录（演示用本地账号，生产环境应换成服务端鉴权）
     LoginDialog login;

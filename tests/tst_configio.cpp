@@ -43,7 +43,7 @@ void TestConfigIo::fullConfigRoundTrip()
     device.id = QStringLiteral("dev-1");
     device.name = QStringLiteral("1 号空压机");
     device.group = QStringLiteral("空压站");
-    device.protocol = DeviceProtocol::ModbusTcp;
+    device.protocolId = QStringLiteral("modbus_tcp");
     device.host = QStringLiteral("192.168.1.10");
     device.port = 502;
     device.slaveId = 3;
@@ -71,7 +71,7 @@ void TestConfigIo::fullConfigRoundTrip()
     QCOMPARE(back.id, device.id);
     QCOMPARE(back.name, device.name);
     QCOMPARE(back.groupName(), device.group);
-    QCOMPARE(int(back.protocol), int(DeviceProtocol::ModbusTcp));
+    QCOMPARE(back.protocolId, device.protocolId);
     QCOMPARE(back.host, device.host);
     QCOMPARE(int(back.port), int(device.port));
     QCOMPARE(back.slaveId, device.slaveId);
@@ -88,7 +88,7 @@ void TestConfigIo::keepsMqttCredentials()
     DeviceInfo device;
     device.id = QStringLiteral("dev-mqtt");
     device.name = QStringLiteral("MQTT 网关");
-    device.protocol = DeviceProtocol::Mqtt;
+    device.protocolId = QStringLiteral("mqtt");
     device.host = QStringLiteral("broker.emqx.io");
     device.port = 1883;
     device.mqttTopic = QStringLiteral("factory/line1/#");

@@ -1,5 +1,7 @@
 #include "ui/devicedialog.h"
 
+#include "comm/protocolregistry.h"
+
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -38,9 +40,11 @@ void DeviceDialog::setupUi()
         edit->setPlaceholderText(QStringLiteral("可直接输入新分组名"));
 
     m_protocolBox = new QComboBox(this);
-    m_protocolBox->addItem(protocolName(DeviceProtocol::Mock), int(DeviceProtocol::Mock));
-    m_protocolBox->addItem(protocolName(DeviceProtocol::ModbusTcp), int(DeviceProtocol::ModbusTcp));
-    m_protocolBox->addItem(protocolName(DeviceProtocol::Mqtt), int(DeviceProtocol::Mqtt));
+    // 协议下拉的内容直接来自协议注册表：**本文件里没有任何一个具体协议的名字**。
+    // 好处是外部插件（编译期之后才放进 plugins/protocols/ 的动态库）装进来之后，
+    // 这里会自动多出一个选项，界面代码一行都不用改。
+    for (IProtocolPlugin *plugin : ProtocolRegistry::instance().plugins())
+        m_protocolBox->addItem(plugin->displayName(), plugin->id());
 
     m_hostEdit = new QLineEdit(QStringLiteral("127.0.0.1"), this);
 
@@ -73,12 +77,20 @@ void DeviceDialog::setupUi()
     m_topicLabel = new QLabel(QStringLiteral("订阅主题"), this);
     m_userLabel = new QLabel(QStringLiteral("接入账号"), this);
     m_passwordLabel = new QLabel(QStringLiteral("接入密码"), this);
+    // 地址 / 端口的标签也要存下来：不走网络的协议（如模拟设备）要把它们一起藏掉，
+    // 只留一个孤零零的输入框在那儿很费解。
+    m_hostLabel = new QLabel(QStringLiteral("地址 / 主机"), this);
+    m_portLabel = new QLabel(QStringLiteral("端口"), this);
+
+    m_hintLabel = new QLabel(this);
+    m_hintLabel->setObjectName(QStringLiteral("panelHint"));
+    m_hintLabel->setWordWrap(true);
 
     form->addRow(QStringLiteral("设备名称"), m_nameEdit);
     form->addRow(QStringLiteral("所属分组"), m_groupBox);
     form->addRow(QStringLiteral("通信协议"), m_protocolBox);
-    form->addRow(QStringLiteral("地址 / 主机"), m_hostEdit);
-    form->addRow(QStringLiteral("端口"), m_portSpin);
+    form->addRow(m_hostLabel, m_hostEdit);
+    form->addRow(m_portLabel, m_portSpin);
     form->addRow(m_slaveLabel, m_slaveSpin);
     form->addRow(m_topicLabel, m_topicEdit);
     form->addRow(m_userLabel, m_userEdit);
@@ -99,12 +111,7 @@ void DeviceDialog::setupUi()
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
-    auto *hint = new QLabel(
-        QStringLiteral("点位表：Modbus 用「寄存器地址 + 类型」；MQTT 用「点位 ID」匹配上报字段。\n"
-                       "接入账号 / 密码仅 MQTT 使用，留空即匿名接入（密码按明文保存，仅适合内网）。"),
-        this);
-    hint->setObjectName(QStringLiteral("panelHint"));
-    hint->setWordWrap(true);
+    auto *hint = m_hintLabel;
 
     auto *layout = new QVBoxLayout(this);
     layout->addLayout(form);
@@ -116,31 +123,75 @@ void DeviceDialog::setupUi()
             this, &DeviceDialog::onProtocolChanged);
 }
 
+QString DeviceDialog::currentProtocolId() const
+{
+    return m_protocolBox->currentData().toString();
+}
+
 void DeviceDialog::onProtocolChanged()
 {
-    const auto protocol = static_cast<DeviceProtocol>(m_protocolBox->currentData().toInt());
+    const QString protocolId = currentProtocolId();
 
     // 端口跟随协议给默认值（切协议时重置，避免残留上一个协议的端口）。
-    m_portSpin->setValue(defaultPortForProtocol(protocol));
+    // 不走网络的协议默认端口是 0 —— 那种情况下保持原值，别把 502 硬塞给它。
+    const quint16 defaultPort = defaultPortForProtocol(protocolId);
+    if (defaultPort != 0)
+        m_portSpin->setValue(defaultPort);
 
     applyProtocolVisibility();
+    updateHint(protocolId);
 }
 
 void DeviceDialog::applyProtocolVisibility()
 {
-    const auto protocol = static_cast<DeviceProtocol>(m_protocolBox->currentData().toInt());
-    const bool isModbus = (protocol == DeviceProtocol::ModbusTcp);
-    const bool isMqtt = (protocol == DeviceProtocol::Mqtt);
+    // 显示哪些字段由**插件自己声明**（ProtocolTraits），这里不再判断协议名。
+    // 于是新增协议时，"界面要动的地方"是零。
+    const ProtocolTraits traits = ProtocolRegistry::instance().traits(currentProtocolId());
 
-    m_slaveLabel->setVisible(isModbus);
-    m_slaveSpin->setVisible(isModbus);
-    m_topicLabel->setVisible(isMqtt);
-    m_topicEdit->setVisible(isMqtt);
-    // 账号只对 MQTT 有意义：Modbus / Mock 没有"接入账号"这个概念
-    m_userLabel->setVisible(isMqtt);
-    m_userEdit->setVisible(isMqtt);
-    m_passwordLabel->setVisible(isMqtt);
-    m_passwordEdit->setVisible(isMqtt);
+    const auto setRowVisible = [](QLabel *label, QWidget *field, bool visible) {
+        label->setVisible(visible);
+        field->setVisible(visible);
+    };
+
+    setRowVisible(m_hostLabel, m_hostEdit, traits.usesNetwork);
+    setRowVisible(m_portLabel, m_portSpin, traits.usesNetwork);
+    setRowVisible(m_slaveLabel, m_slaveSpin, traits.usesSlaveId);
+    setRowVisible(m_topicLabel, m_topicEdit, traits.usesEndpoint);
+    setRowVisible(m_userLabel, m_userEdit, traits.usesCredentials);
+    setRowVisible(m_passwordLabel, m_passwordEdit, traits.usesCredentials);
+
+    // 端点在界面上的叫法也由插件决定：MQTT 叫「订阅主题」，HTTP 叫「请求路径」——
+    // 同一个配置字段，用各自协议的话说。
+    if (traits.usesEndpoint) {
+        m_topicLabel->setText(traits.endpointLabel.isEmpty() ? QStringLiteral("订阅主题")
+                                                             : traits.endpointLabel);
+    }
+}
+
+void DeviceDialog::updateHint(const QString &protocolId)
+{
+    IProtocolPlugin *plugin = ProtocolRegistry::instance().plugin(protocolId);
+    const QString description = plugin ? plugin->description() : QString();
+
+    // 点位表的填写方式跟协议有关，这部分是按"需要什么类型的信息"描述的，
+    // 不是按协议名硬编码的说明文案。
+    const ProtocolTraits traits = ProtocolRegistry::instance().traits(protocolId);
+    QStringList tips;
+    if (traits.usesSlaveId)
+        tips << QStringLiteral("点位表用「寄存器地址 + 寄存器类型」定位，开关量只取 0/1、不做缩放。");
+    if (traits.usesEndpoint)
+        tips << QStringLiteral("「%1」由协议自己解释；点位表的 ID 要和现场返回的字段名对上。")
+                    .arg(traits.endpointLabel.isEmpty() ? QStringLiteral("订阅主题")
+                                                        : traits.endpointLabel);
+    if (traits.usesCredentials)
+        tips << QStringLiteral("接入账号 / 密码留空即匿名接入（密码按明文保存，仅适合内网）。");
+
+    QStringList lines;
+    if (!description.isEmpty())
+        lines << description;
+    lines += tips;
+    m_hintLabel->setText(lines.join(QStringLiteral("\n")));
+    m_hintLabel->setVisible(!lines.isEmpty());
 }
 
 void DeviceDialog::loadPoints(const QList<TagPoint> &points)
@@ -227,8 +278,10 @@ void DeviceDialog::setDevice(const DeviceInfo &device)
     m_nameEdit->setText(device.name);
     m_groupBox->setCurrentText(device.groupName());
 
-    const int protocolIndex = m_protocolBox->findData(int(device.protocol));
-    if (protocolIndex >= 0)
+    // 按协议 **id** 找选项（不是下标 —— 下标会随插件增删而变，id 不会）
+    const int protocolIndex = m_protocolBox->findData(device.protocolId);
+    const bool protocolMissing = (protocolIndex < 0);
+    if (!protocolMissing)
         m_protocolBox->setCurrentIndex(protocolIndex);
 
     m_hostEdit->setText(device.host);
@@ -243,6 +296,15 @@ void DeviceDialog::setDevice(const DeviceInfo &device)
 
     loadPoints(device.points.isEmpty() ? defaultTagPoints() : device.points);
     applyProtocolVisibility();
+
+    if (protocolMissing) {
+        // 协议插件不在了（被删掉 / 配置来自另一台机器）：**明确提示**，
+        // 绝不静默把设备改成下拉里的第一项 —— 那等于偷偷换了一种通信协议。
+        m_hintLabel->setText(QStringLiteral("⚠ 找不到协议插件「%1」：该协议未安装。"
+                                            "保存前请重新选择一种协议，否则采集无法启动。")
+                                 .arg(device.protocolId));
+        m_hintLabel->setVisible(true);
+    }
 }
 
 DeviceInfo DeviceDialog::device() const
@@ -253,7 +315,7 @@ DeviceInfo DeviceDialog::device() const
     info.group = m_groupBox->currentText().trimmed();
     if (info.group.isEmpty())
         info.group = defaultGroupName();
-    info.protocol = static_cast<DeviceProtocol>(m_protocolBox->currentData().toInt());
+    info.protocolId = currentProtocolId();
     info.host = m_hostEdit->text().trimmed();
     info.port = static_cast<quint16>(m_portSpin->value());
     info.slaveId = m_slaveSpin->value();
@@ -261,9 +323,9 @@ DeviceInfo DeviceDialog::device() const
     info.mqttTopic = m_topicEdit->text().trimmed();
     info.points = collectPoints();
 
-    // 账号只在 MQTT 下保留：切回 Modbus / Mock 时把残留的账号清掉，
+    // 账号只在声明需要它的协议下保留：切回别的协议时把残留的账号清掉，
     // 否则导出配置里会带着一份用不上的明文口令。
-    if (info.protocol == DeviceProtocol::Mqtt) {
+    if (ProtocolRegistry::instance().traits(info.protocolId).usesCredentials) {
         info.username = m_userEdit->text().trimmed();
         // 密码不做 trim：口令里的首尾空格是有效字符，替用户"修正"反而会造成登录失败
         info.password = m_passwordEdit->text();
@@ -273,7 +335,7 @@ DeviceInfo DeviceDialog::device() const
     }
 
     if (info.name.isEmpty())
-        info.name = protocolName(info.protocol);
+        info.name = protocolName(info.protocolId);
 
     return info;
 }

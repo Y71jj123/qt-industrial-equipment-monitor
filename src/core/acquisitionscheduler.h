@@ -71,15 +71,17 @@ private:
         bool connected = false;                 ///< 连接状态快照（见 isRunning 的说明）
     };
 
-    /// 按设备配置创建连接（协议分支 + 统一 configure）。
-    /// 返回的对象**没有父对象** —— moveToThread 要求如此。
+    /// 按设备配置创建连接。协议实现由协议注册表提供 ——
+    /// 本类里**没有任何协议分支**，新增协议不需要改这里。
+    /// 返回的对象**没有父对象** —— moveToThread 要求如此；协议不可用时返回 nullptr。
     DeviceConnection *createConnection(const DeviceInfo &device);
 
     /// 起一条线程并挂上第一个连接（start 路径）。
     bool startWorker(const QString &deviceId);
 
     /// 造一个连接挂到已有线程上并投递 open()（首连 / 重连共用）。
-    void attachConnection(const QString &deviceId, Runtime &runtime);
+    /// @return 协议不可用时返回 false（此时不会改动 runtime）。
+    bool attachConnection(const QString &deviceId, Runtime &runtime);
 
     /// 把连接从线程上摘下来：让它在自己的线程里 close + 析构。
     void detachConnection(Runtime &runtime);

@@ -72,12 +72,21 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 
 ## P1 — 技术深度（体现架构能力，面试主要问这里）
 
-### P1-1 协议插件化
+### P1-1 协议插件化 ✅ 已完成
 
-把 `createConnection()` 的硬编码 `switch` 换成 `QPluginLoader` 动态加载的协议插件，
-每个协议编译成独立动态库，通过元数据声明"支持哪个协议 / 默认端口"。
-新增协议 = 丢一个 so/dll 进去，主程序零改动、零重编译。
-**验收**：新增一个示例协议插件，不重新编译主程序即可在"添加设备"里选到。
+- **做什么**：把 `createConnection()` 的硬编码 `switch` 换成协议注册表 + `QPluginLoader` 动态加载。
+  每个协议编成独立动态库，通过元数据声明"协议 id / 显示名 / 默认端口 / 需要哪些配置字段"。
+  新增协议 = 丢一个 dll 进去，主程序零改动、零重编译。
+- **为什么**：`switch` 的问题不只是"改一行"，而是**连带**——加一种协议要同时动调度器、
+  设备对话框（`protocol == Mqtt` 之类的硬判断）、存储列、配置导入导出四处。
+  真正卡住扩展的是这些分散的硬编码，不是那个 switch 本身。
+- **落点**：`comm/protocolplugin.h`（`IProtocolPlugin` + `ProtocolTraits`）、
+  `comm/protocolregistry.*`（注册表 + 插件加载 + 老整型映射）、`comm/builtinprotocols.cpp`
+  （内置协议改成插件形式注册）、`plugins/http_json/`（外部插件样板）、
+  `core/devicemanager.h`（`protocol` 枚举 → 字符串 `protocolId`）、
+  `storage`（`devices.protocol_id` 列 + `ensureColumn` 迁移）、
+  `ui/devicedialog.*`（协议列表与字段可见性全由 traits 驱动）、`main.cpp`（启动时注册 + 扫描插件）。
+- **验收**：✅ 见下面的落地记录。
 
 ### P1-2 单元测试 + CI ✅ 已完成
 
@@ -89,7 +98,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 - **落点**：`src/CMakeLists.txt`（拆出 `monitor_core` 静态库 + 仅含 main 的可执行文件）、
   `tests/`（`tst_alarmengine` / `tst_datastorage` / `tst_configio`）、
   `CMakeLists.txt`（`include(CTest)` + `add_subdirectory(tests)`）、`.github/workflows/build.yml`。
-- **验收**：✅ `ctest --test-dir build --output-on-failure` → **3/3 套件全绿**。
+- **验收**：✅ `ctest --test-dir build --output-on-failure` → **4/4 套件全绿**（38 个用例）。
 - **踩坑记录**：Windows 上 ctest 直接跑测试会以 `0xc0000135`（找不到 DLL）整体失败，
   而人肉双击又是好的 —— 极易误判成"测试写错了"。解法是在 `tests/CMakeLists.txt` 里用
   `ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:<Qt bin>"` 把 Qt 的 bin 目录塞进测试进程
@@ -118,7 +127,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | v0.5 | 双主题 / 告警通知体系 / 采集线程化 / 曲线交互 / 配置导入导出 | ✅ 已完成 |
 | v0.6 | 总览仪表盘 / MQTT 接入鉴权 | ✅ 已完成 |
 | v0.7 | P0 三项（工单闭环 / 块读+RTU / 断线补传） | 🚧 进行中：**P0-1、P0-3 已完成**；P0-2 待定（缺 Qt SerialPort） |
-| v0.8 | P1 三项（插件化 / 测试+CI / 性能基线） | 🚧 进行中：**P1-2 已完成** |
+| v0.8 | P1 三项（插件化 / 测试+CI / 性能基线） | 🚧 进行中：**P1-1、P1-2 已完成** |
 | v1.0 | P2 完成，可交付现场试用 | 待开始 |
 
 ### 已完成项的落地记录
@@ -127,7 +136,8 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | --- | --- | --- |
 | P0-1 工单闭环 | `AlarmDisposition` + `AlarmRecord` 处理字段；`AlarmEngine::handleAlarm/averageHandleDurationMs`；`alarms` 表补 4 列（`ensureColumn` 迁移）；告警面板「处理选中…」对话框（强制填说明）；总览页 KPI 墙扩到 2×5 加「已处理告警 / MTTR」；报表页加「已处理 / MTTR」列与 Excel 处理字段；处理动作写操作留痕 | 临时控制台测试 **32 项断言全通过**（引擎状态机 + 数据库往返 + MTTR SQL 实测 120005ms ≈ 期望 120000ms） |
 | P0-3 采样溢出队列 | 落库失败**不再丢弃**，改为 JSON Lines 追加写盘（`<db>.pending.jsonl`，64MB 闸门）；启动时按时间升序补传，**提交成功后才删队列文件**；`insertSample` 不再因"库未打开"而拒绝采样 | 临时控制台测试 **13 项断言全通过**（含用独立连接按 `rowid` 校验补传的物理写入顺序 = 时间升序；坏行容错） |
-| P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 三个 QTest 套件共 22 个用例；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **3/3 套件全绿**；CI 配置就绪 |
+| P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 四个 QTest 套件共 38 个用例；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **4/4 套件全绿**；CI 配置就绪 |
+| P1-1 协议插件化 | `IProtocolPlugin`（id / 显示名 / 默认端口 / `ProtocolTraits` / 连接工厂）+ `ProtocolRegistry`（注册、`QPluginLoader` 加载、按 id 建连接、老整型映射）；三个内置协议改写成插件形式注册，`createConnection()` 里**再无 switch**；`DeviceInfo::protocol` 枚举 → 字符串 `protocolId`，`devices.protocol_id` 列 + `ensureColumn` 迁移（老库靠冻结映射表读起来，写入时仍留一份老整型便于降级）；设备对话框的协议列表与字段可见性全由 traits 驱动；外部插件样板 `plugins/http_json/`（HTTP/JSON 数据源，一轮采集只发一次请求） | 临时验证程序 **40 项断言全 PASS**：注册表规则 / 老整型映射 / 未知协议明确失败 / 外部插件真实取数（连本地 HTTP 桩，**两轮采集只发 2 次 GET**） / 写回 / **老 schema 数据库读出来自动变成字符串 id** / 对话框出现第 4 个协议且字段可见性随 traits 变化；**真实程序与安装包都认到 4 个协议**（日志：`协议就绪：4 个（其中外部插件 1 个）`）；`ctest` 4/4 |
 | P2-3 日志滚动 + 崩溃转储 | `Log::init(path, maxBytes, maxFiles)` 按大小滚动（默认 2MB × 5 份，超限丢最老）；新增 `utils/crashhandler.*`：Windows 走 `SetUnhandledExceptionFilter` + `MiniDumpWriteDump` 产 `.dmp`，其他平台走信号处理器产带栈的 `.txt`；`main.cpp` 启动即安装 | 临时验证程序 **13 项断言全 PASS**；**真的触发一次空指针崩溃**，产出 67,927 字节的 minidump |
 | P2-1 安装包 | `install(TARGETS)` + `qt_generate_deploy_app_script(NO_TRANSLATIONS)` 自动带上 Qt 运行时；顶层接 CPack（默认 ZIP，可切 NSIS）；README 补打包说明 | **解压 ZIP 到全新目录、PATH 里不含 Qt 直接运行成功**（EXITCODE=124 = 活满 6 秒）；包内 10 项关键文件齐全；33 MB |
 | P2-2 运行截图 | 写了一个截图夹具（真实构造主窗口 + 3 台 Mock 设备跑满 60 秒窗口），抓下 10 个页签存进 `docs/screenshots/`，README 新增「界面预览」 | 10 张 PNG（共 1.6 MB）；顺带**发现并修掉一个真 bug**（见下） |

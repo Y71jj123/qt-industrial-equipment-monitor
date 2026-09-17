@@ -1,5 +1,6 @@
 #include "core/devicemanager.h"
 
+#include "comm/protocolregistry.h"
 #include "utils/logger.h"
 
 #include <QUuid>
@@ -281,30 +282,16 @@ QString deviceStateName(DeviceState state)
     return QStringLiteral("离线");
 }
 
-QString protocolName(DeviceProtocol protocol)
+QString protocolName(const QString &protocolId)
 {
-    switch (protocol) {
-    case DeviceProtocol::ModbusTcp:
-        return QStringLiteral("Modbus TCP");
-    case DeviceProtocol::Mqtt:
-        return QStringLiteral("MQTT");
-    case DeviceProtocol::Mock:
-        break;
-    }
-    return QStringLiteral("模拟设备");
+    // 统一走协议注册表：内置协议与外部插件在这里没有区别，
+    // 界面也不需要知道"哪种协议长什么样"。
+    return ProtocolRegistry::instance().displayName(protocolId);
 }
 
-quint16 defaultPortForProtocol(DeviceProtocol protocol)
+quint16 defaultPortForProtocol(const QString &protocolId)
 {
-    switch (protocol) {
-    case DeviceProtocol::ModbusTcp:
-        return 502;
-    case DeviceProtocol::Mqtt:
-        return 1883;
-    case DeviceProtocol::Mock:
-        break;
-    }
-    return 502;
+    return ProtocolRegistry::instance().defaultPort(protocolId);
 }
 
 QList<TagPoint> defaultTagPoints()

@@ -1,5 +1,6 @@
 #include "storage/datastorage.h"
 
+#include "comm/protocolregistry.h"
 #include "utils/configio.h"
 #include "utils/logger.h"
 
@@ -166,6 +167,7 @@ bool DataStorage::createTables()
                        "  port       INTEGER,"
                        "  slave      INTEGER,"
                        "  protocol   INTEGER,"
+                       "  protocol_id TEXT,"
                        "  poll_ms    INTEGER,"
                        "  mqtt_topic TEXT,"
                        "  points     TEXT,"
@@ -192,6 +194,12 @@ bool DataStorage::createTables()
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("username"), QStringLiteral("TEXT")))
         return false;
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("password"), QStringLiteral("TEXT")))
+        return false;
+
+    // 协议插件化：协议从整型枚举换成了字符串 id（外部插件的协议在编译期还不存在，
+    // 枚举表达不了）。老库补出来的 protocol_id 是 NULL，加载时按老的 protocol
+    // 整型映射一次即可 —— 不需要数据回填脚本，老设备配置照旧能用。
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("protocol_id"), QStringLiteral("TEXT")))
         return false;
 
     // 告警工单闭环：老库的 alarms 表没有处理结论这几列。
@@ -801,16 +809,20 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
 
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
-        "REPLACE INTO devices (id, name, host, port, slave, protocol, poll_ms, mqtt_topic,"
-        " points, grp, username, password)"
-        " VALUES (:id, :name, :host, :port, :slave, :protocol, :poll, :topic, :points, :grp,"
-        " :user, :pass)"));
+        "REPLACE INTO devices (id, name, host, port, slave, protocol, protocol_id, poll_ms,"
+        " mqtt_topic, points, grp, username, password)"
+        " VALUES (:id, :name, :host, :port, :slave, :protocol, :protocol_id, :poll, :topic,"
+        " :points, :grp, :user, :pass)"));
     query.bindValue(QStringLiteral(":id"), device.id);
     query.bindValue(QStringLiteral(":name"), device.name);
     query.bindValue(QStringLiteral(":host"), device.host);
     query.bindValue(QStringLiteral(":port"), int(device.port));
     query.bindValue(QStringLiteral(":slave"), device.slaveId);
-    query.bindValue(QStringLiteral(":protocol"), int(device.protocol));
+    // 老的整型列照旧写一份（内置协议才认得出，其余写 -1）：
+    // 万一要把程序降级回旧版本，那份代码还能读出设备来，而不是全部落成"默认协议"。
+    query.bindValue(QStringLiteral(":protocol"),
+                    ProtocolRegistry::legacyIntFromId(device.protocolId));
+    query.bindValue(QStringLiteral(":protocol_id"), device.protocolId);
     query.bindValue(QStringLiteral(":poll"), device.pollIntervalMs);
     query.bindValue(QStringLiteral(":topic"), device.mqttTopic);
     query.bindValue(QStringLiteral(":points"), pointsToJson(device.points));
@@ -863,7 +875,7 @@ QList<DeviceInfo> DataStorage::loadDevices() const
     QSqlQuery query(m_db);
     if (!query.exec(QStringLiteral(
             "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points, grp,"
-            " username, password"
+            " username, password, protocol_id"
             " FROM devices"))) {
         m_lastError = query.lastError().text();
         return result;
@@ -876,13 +888,24 @@ QList<DeviceInfo> DataStorage::loadDevices() const
         info.host = query.value(2).toString();
         info.port = static_cast<quint16>(query.value(3).toInt());
         info.slaveId = query.value(4).toInt();
-        info.protocol = static_cast<DeviceProtocol>(query.value(5).toInt());
         info.pollIntervalMs = query.value(6).toInt();
         info.mqttTopic = query.value(7).toString();
         info.points = pointsFromJson(query.value(8).toString());
         info.group = query.value(9).toString(); // 老库补列后是 NULL → 空串 → 默认分组
         info.username = query.value(10).toString(); // 同上：老库补列后为空 → 匿名接入
         info.password = query.value(11).toString();
+
+        // 协议：优先用字符串 id；老库那行 protocol_id 是 NULL → 按老整型映射一次。
+        const QString protocolId = query.value(12).toString();
+        if (!protocolId.isEmpty()) {
+            info.protocolId = protocolId;
+        } else {
+            const int legacy = query.value(5).toInt();
+            info.protocolId = ProtocolRegistry::idFromLegacyInt(legacy);
+            Log::info(QStringLiteral("老库设备 %1 的协议由整型 %2 迁移为 %3")
+                          .arg(info.id, QString::number(legacy), info.protocolId));
+        }
+
         result.append(info);
     }
     return result;

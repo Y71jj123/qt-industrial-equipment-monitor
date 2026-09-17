@@ -1,8 +1,7 @@
 #include "core/acquisitionscheduler.h"
 
-#include "comm/mockconnection.h"
-#include "comm/modbusconnection.h"
-#include "comm/mqttconnection.h"
+#include "comm/deviceconnection.h"
+#include "comm/protocolregistry.h"
 #include "core/devicemanager.h"
 #include "utils/logger.h"
 
@@ -38,21 +37,12 @@ AcquisitionScheduler::~AcquisitionScheduler()
 
 DeviceConnection *AcquisitionScheduler::createConnection(const DeviceInfo &device)
 {
-    DeviceConnection *connection = nullptr;
-
-    switch (device.protocol) {
-    case DeviceProtocol::ModbusTcp:
-        connection = new ModbusTcpConnection();
-        break;
-    case DeviceProtocol::Mqtt:
-        connection = new MqttConnection();
-        break;
-    case DeviceProtocol::Mock:
-    default:
-        // 无硬件时也能跑通全流程
-        connection = new MockConnection();
-        break;
-    }
+    // 协议实现由注册表提供：**这里已经没有任何 switch**。
+    // 内置协议和外部插件在注册表里是同一种东西，新增协议不用碰这一行 ——
+    // 这正是"协议插件化"要达成的效果。
+    DeviceConnection *connection = ProtocolRegistry::instance().create(device.protocolId);
+    if (!connection)
+        return nullptr;
 
     // 唯一入口：把设备配置（点位表 / 从站号 / 采集周期）喂给协议实现。
     // MockConnection 会忽略协议参数，只用点位表和周期。
@@ -94,7 +84,12 @@ bool AcquisitionScheduler::startWorker(const QString &deviceId)
     thread->setObjectName(QStringLiteral("acq-%1").arg(deviceId.left(8)));
     it->thread = thread;
 
-    attachConnection(deviceId, *it);
+    if (!attachConnection(deviceId, *it)) {
+        // 协议都建不出来，线程没必要起来 —— 起一条空线程只会让人以为"在采集"
+        it->thread = nullptr;
+        thread->deleteLater();
+        return false;
+    }
 
     thread->start();
 
@@ -103,11 +98,21 @@ bool AcquisitionScheduler::startWorker(const QString &deviceId)
     return true;
 }
 
-void AcquisitionScheduler::attachConnection(const QString &deviceId, Runtime &runtime)
+bool AcquisitionScheduler::attachConnection(const QString &deviceId, Runtime &runtime)
 {
     const DeviceInfo info = m_manager->device(deviceId);
 
     DeviceConnection *connection = createConnection(info);
+    if (!connection) {
+        // 协议没注册上（插件缺失 / 配置里写了个不存在的 id）：
+        // 明确报出来并放弃启动，**不要**偷偷退回某个默认协议 ——
+        // 那会让"配置错了"表现成"数据看着像对的"，比直接连不上危险得多。
+        emit errorOccurred(deviceId,
+                           QStringLiteral("协议 %1 不可用，采集未启动")
+                               .arg(info.protocolId.isEmpty() ? QStringLiteral("(空)")
+                                                              : info.protocolId));
+        return false;
+    }
 
     // 对象连同将来的 socket / 定时器一起搬到设备线程。
     // 搬之前不能有父对象，否则 moveToThread 会失败。
@@ -133,6 +138,7 @@ void AcquisitionScheduler::attachConnection(const QString &deviceId, Runtime &ru
 
     runtime.connection = connection;
     runtime.connected = false;
+    return true;
 }
 
 void AcquisitionScheduler::detachConnection(Runtime &runtime)
@@ -337,7 +343,12 @@ void AcquisitionScheduler::attemptReconnect(const QString &deviceId)
 
     // 重连复用同一条线程（线程寿命跟"设备是否在采集"对齐），只换连接对象
     detachConnection(*it);
-    attachConnection(deviceId, *it);
+    if (!attachConnection(deviceId, *it)) {
+        // 协议建不出来（大概率是插件被删了），重试多少次结果都一样 ——
+        // 直接放弃，免得日志被"每 30 秒失败一次"刷屏。
+        Log::error(QStringLiteral("设备 %1 重连中止：协议不可用").arg(deviceId));
+        return;
+    }
     requestOpen(deviceId);
 }
 
