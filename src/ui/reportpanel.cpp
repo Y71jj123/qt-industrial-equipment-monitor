@@ -37,6 +37,8 @@ enum StatsColumn {
     ColDevice = 0,
     ColSamples,
     ColAlarms,
+    ColHandled,
+    ColMttr,
     ColFirst,
     ColLast,
     ColDuration,
@@ -100,6 +102,8 @@ void ReportPanel::setupUi()
     m_table->setHorizontalHeaderLabels({QStringLiteral("设备"),
                                         QStringLiteral("采样点数"),
                                         QStringLiteral("告警次数"),
+                                        QStringLiteral("已处理"),
+                                        QStringLiteral("MTTR"),
                                         QStringLiteral("首次采样"),
                                         QStringLiteral("最后采样"),
                                         QStringLiteral("运行时长")});
@@ -157,6 +161,10 @@ void ReportPanel::refresh()
     m_table->setRowCount(0);
     qint64 totalSamples = 0;
     int totalAlarms = 0;
+    int totalHandled = 0;
+    // 整体 MTTR 用"按已处理条数加权"求，不能把各设备的平均值再平均一次 ——
+    // 那样一台只处理过 1 条告警的设备会和一台处理过 500 条的设备等权。
+    double weightedHandleMs = 0.0;
 
     for (const DataStorage::DeviceStats &stat : stats) {
         const int row = m_table->rowCount();
@@ -165,6 +173,8 @@ void ReportPanel::refresh()
         m_table->setItem(row, ColDevice, new QTableWidgetItem(deviceName(stat.deviceId)));
         m_table->setItem(row, ColSamples, new QTableWidgetItem(QString::number(stat.sampleCount)));
         m_table->setItem(row, ColAlarms, new QTableWidgetItem(QString::number(stat.alarmCount)));
+        m_table->setItem(row, ColHandled, new QTableWidgetItem(QString::number(stat.handledCount)));
+        m_table->setItem(row, ColMttr, new QTableWidgetItem(formatHandleDuration(stat.avgHandleMs)));
         m_table->setItem(row, ColFirst, new QTableWidgetItem(formatTime(stat.firstSample)));
         m_table->setItem(row, ColLast, new QTableWidgetItem(formatTime(stat.lastSample)));
 
@@ -175,12 +185,22 @@ void ReportPanel::refresh()
 
         totalSamples += stat.sampleCount;
         totalAlarms += stat.alarmCount;
+        totalHandled += stat.handledCount;
+        if (stat.avgHandleMs >= 0)
+            weightedHandleMs += double(stat.avgHandleMs) * stat.handledCount;
     }
 
-    m_summary->setText(QStringLiteral("共 %1 台设备有数据 ｜ 采样 %2 点 ｜ 告警 %3 次 ｜ %4 ~ %5")
+    const qint64 overallMttr = totalHandled > 0
+                                   ? qint64(weightedHandleMs / totalHandled)
+                                   : -1;
+
+    m_summary->setText(QStringLiteral("共 %1 台设备有数据 ｜ 采样 %2 点 ｜ 告警 %3 次 ｜ "
+                                      "已处理 %4 ｜ MTTR %5 ｜ %6 ~ %7")
                            .arg(stats.size())
                            .arg(totalSamples)
                            .arg(totalAlarms)
+                           .arg(totalHandled)
+                           .arg(formatHandleDuration(overallMttr))
                            .arg(from.toString(QStringLiteral("MM-dd HH:mm")))
                            .arg(to.toString(QStringLiteral("MM-dd HH:mm"))));
 }
@@ -219,13 +239,17 @@ void ReportPanel::onExportExcel()
     statsSheet.headers = {QStringLiteral("设备"),
                           QStringLiteral("采样点数"),
                           QStringLiteral("告警次数"),
+                          QStringLiteral("已处理"),
+                          QStringLiteral("MTTR"),
                           QStringLiteral("首次采样"),
                           QStringLiteral("最后采样"),
                           QStringLiteral("运行时长")};
-    statsSheet.numericColumns = {ColSamples, ColAlarms};
+    statsSheet.numericColumns = {ColSamples, ColAlarms, ColHandled};
 
     qint64 totalSamples = 0;
     int totalAlarms = 0;
+    int totalHandled = 0;
+    double weightedHandleMs = 0.0;
     for (const DataStorage::DeviceStats &stat : stats) {
         const qint64 seconds = (stat.firstSample.isValid() && stat.lastSample.isValid())
                                    ? stat.firstSample.secsTo(stat.lastSample)
@@ -234,17 +258,26 @@ void ReportPanel::onExportExcel()
         statsSheet.rows.append({deviceName(stat.deviceId),
                                 QString::number(stat.sampleCount),
                                 QString::number(stat.alarmCount),
+                                QString::number(stat.handledCount),
+                                formatHandleDuration(stat.avgHandleMs),
                                 formatTime(stat.firstSample),
                                 formatTime(stat.lastSample),
                                 formatDuration(seconds)});
 
         totalSamples += stat.sampleCount;
         totalAlarms += stat.alarmCount;
+        totalHandled += stat.handledCount;
+        if (stat.avgHandleMs >= 0)
+            weightedHandleMs += double(stat.avgHandleMs) * stat.handledCount;
     }
+
+    const qint64 overallMttr = totalHandled > 0 ? qint64(weightedHandleMs / totalHandled) : -1;
 
     statsSheet.rows.append({QStringLiteral("合计（%1 台）").arg(stats.size()),
                             QString::number(totalSamples),
                             QString::number(totalAlarms),
+                            QString::number(totalHandled),
+                            formatHandleDuration(overallMttr),
                             QString(),
                             QString(),
                             QString()});
@@ -262,7 +295,11 @@ void ReportPanel::onExportExcel()
                           QStringLiteral("下限"),
                           QStringLiteral("上限"),
                           QStringLiteral("状态"),
-                          QStringLiteral("说明")};
+                          QStringLiteral("处理结论"),
+                          QStringLiteral("处理人"),
+                          QStringLiteral("处理时间"),
+                          QStringLiteral("处理说明"),
+                          QStringLiteral("告警说明")};
     alarmSheet.numericColumns = {5, 6, 7};
 
     QList<AlarmRecord> alarms = m_storage->queryAlarms(from, to, 100000);
@@ -279,6 +316,11 @@ void ReportPanel::onExportExcel()
              QString::number(record.lowLimit, 'f', 3),
              QString::number(record.highLimit, 'f', 3),
              record.active ? QStringLiteral("活动") : QStringLiteral("已恢复"),
+             record.handled() ? alarmDispositionName(record.disposition) : QStringLiteral("—"),
+             record.handledBy,
+             record.handled() ? record.handledAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                              : QString(),
+             record.handlingNote,
              record.message});
     }
 

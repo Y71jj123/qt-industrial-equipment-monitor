@@ -51,10 +51,17 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
    上层（界面 / 调度）不应感知协议差异。
 5. **改数据库结构**要写 `CREATE TABLE IF NOT EXISTS`，并**同时补一次 `ensureColumn()`**
    （老库不会因为 CREATE TABLE IF NOT EXISTS 而多出新列）。
-   现有补列：`devices.grp`、`devices.username`、`devices.password`。
-   在 `devices` 表上加字段的完整改动清单：
-   `devicemanager.h`(DeviceInfo) → `datastorage.cpp`(建表 + ensureColumn + saveDevice + loadDevices)
-   → `configio.cpp`(deviceToJson/deviceFromJson) → `devicedialog.cpp`(控件 + setDevice + device())。
+   现有补列：`devices.grp`、`devices.username`、`devices.password`、
+   `alarms.disposition`、`alarms.handled_by`、`alarms.handled_at`、`alarms.note`。
+   - 在 `devices` 表加字段的完整清单：
+     `devicemanager.h`(DeviceInfo) → `datastorage.cpp`(建表 + ensureColumn + saveDevice + loadDevices)
+     → `configio.cpp`(deviceToJson/deviceFromJson) → `devicedialog.cpp`(控件 + setDevice + device())。
+   - 在 `alarms` 表加字段的完整清单：
+     `alarmengine.h`(AlarmRecord) → `datastorage.cpp`(建表 + ensureColumn + insertAlarm + queryAlarms)
+     → `ui/alarmpanel.cpp`(表格列) → `ui/reportpanel.cpp`(表格列 + Excel 导出两处)。
+   - **写入时必须区分"有值"和"NULL"**：未处理的告警要把 `disposition/handled_at` 写成 NULL，
+     不能写 `disposition` 的默认值 0（那是"已处理恢复"）—— 否则报表会把未处理告警算成已处理。
+     判断"是否处理过"**永远以 `handled_at` 是否有效为准**，不要看 disposition 的值。
 6. **MQTT 的 CONNACK 只能在 `onReadyRead` 里判** —— 建连后的数据会先经 `readyRead`
    被 `onReadyRead` 收进 `m_buffer`；`open()` 里再 `socket->readAll()` 只会拿到空数组，
    于是"账号密码错误（返回码 4）"会被当成连接成功。

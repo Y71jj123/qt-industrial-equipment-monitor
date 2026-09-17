@@ -119,6 +119,8 @@ private:
     KpiCard *m_cardOnlineRate = nullptr;
     KpiCard *m_cardActiveAlarms = nullptr;
     KpiCard *m_cardUnackAlarms = nullptr;
+    KpiCard *m_cardHandledAlarms = nullptr; ///< 已录入处理结论的告警数
+    KpiCard *m_cardMttr = nullptr;          ///< 平均处理时长（MTTR）
     KpiCard *m_cardTotalSamples = nullptr;
     KpiCard *m_cardSessionSamples = nullptr;
 

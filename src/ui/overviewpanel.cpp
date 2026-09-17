@@ -145,7 +145,9 @@ OverviewPanel::OverviewPanel(DeviceManager *deviceManager,
 
 void OverviewPanel::setupUi()
 {
-    // KPI 数字墙
+    // KPI 数字墙：2 行 × 5 列。
+    // 第一行讲"设备现在怎么样"，第二行讲"告警处理得怎么样 + 数据攒了多少"，
+    // 排布本身就是在讲一个顺序：先看设备，再看告警，最后看数据量。
     m_kpiGrid = new QGridLayout;
     m_kpiGrid->setContentsMargins(0, 0, 0, 0);
     m_kpiGrid->setSpacing(10);
@@ -154,10 +156,12 @@ void OverviewPanel::setupUi()
     m_cardOnline = createKpiCard(0, 1, QStringLiteral("在线设备"), QStringLiteral("台"));
     m_cardOffline = createKpiCard(0, 2, QStringLiteral("离线 / 故障"), QStringLiteral("台"));
     m_cardOnlineRate = createKpiCard(0, 3, QStringLiteral("在线率"), QString());
-    m_cardActiveAlarms = createKpiCard(1, 0, QStringLiteral("活动告警"), QStringLiteral("条"));
-    m_cardUnackAlarms = createKpiCard(1, 1, QStringLiteral("未确认告警"), QStringLiteral("条"));
-    m_cardTotalSamples = createKpiCard(1, 2, QStringLiteral("历史采样点"), QStringLiteral("条"));
-    m_cardSessionSamples = createKpiCard(1, 3, QStringLiteral("本次运行采样"), QStringLiteral("条"));
+    m_cardActiveAlarms = createKpiCard(0, 4, QStringLiteral("活动告警"), QStringLiteral("条"));
+    m_cardUnackAlarms = createKpiCard(1, 0, QStringLiteral("未确认告警"), QStringLiteral("条"));
+    m_cardHandledAlarms = createKpiCard(1, 1, QStringLiteral("已处理告警"), QStringLiteral("条"));
+    m_cardMttr = createKpiCard(1, 2, QStringLiteral("平均处理时长 MTTR"), QString());
+    m_cardTotalSamples = createKpiCard(1, 3, QStringLiteral("历史采样点"), QStringLiteral("条"));
+    m_cardSessionSamples = createKpiCard(1, 4, QStringLiteral("本次运行采样"), QStringLiteral("条"));
 
     // 设备状态区
     m_deviceSectionTitle = new QLabel(QStringLiteral("设备状态"), this);
@@ -427,6 +431,25 @@ void OverviewPanel::updateKpiValues()
         applyTone(m_cardUnackAlarms, QStringLiteral("Danger"));
     else
         applyTone(m_cardUnackAlarms, QStringLiteral("Warn"));
+
+    // ---- 已处理告警（工单闭环）----
+    const int handledCount = m_alarmEngine ? m_alarmEngine->handledCount() : 0;
+    const int historyCount = m_alarmEngine ? m_alarmEngine->history().size() : 0;
+    m_cardHandledAlarms->value->setText(QString::number(handledCount));
+    if (historyCount > 0) {
+        m_cardHandledAlarms->hint->setText(QStringLiteral("处理率 %1")
+                                               .arg(formatPercent(100.0 * handledCount / historyCount)));
+    } else {
+        m_cardHandledAlarms->hint->setText(QStringLiteral("暂无告警记录"));
+    }
+    applyTone(m_cardHandledAlarms, handledCount > 0 ? QStringLiteral("Ok") : QString());
+
+    // ---- MTTR：现场考核的核心指标 ----
+    const qint64 mttr = m_alarmEngine ? m_alarmEngine->averageHandleDurationMs() : -1;
+    m_cardMttr->value->setText(formatHandleDuration(mttr));
+    m_cardMttr->hint->setText(mttr < 0 ? QStringLiteral("还没有处理记录")
+                                       : QStringLiteral("告警产生 → 录入结论"));
+    applyTone(m_cardMttr, QString());
 
     // ---- 历史采样点（数据库）----
     m_cardTotalSamples->value->setText(formatCount(m_totalSamples));

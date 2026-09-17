@@ -42,6 +42,34 @@ QString alarmKindName(AlarmKind kind)
     return QStringLiteral("阈值");
 }
 
+QString alarmDispositionName(AlarmDisposition disposition)
+{
+    switch (disposition) {
+    case AlarmDisposition::Maintained:
+        return QStringLiteral("停机检修");
+    case AlarmDisposition::FalseAlarm:
+        return QStringLiteral("误报");
+    case AlarmDisposition::Ignored:
+        return QStringLiteral("观察中");
+    case AlarmDisposition::Resolved:
+        break;
+    }
+    return QStringLiteral("已处理恢复");
+}
+
+QString formatHandleDuration(qint64 milliseconds)
+{
+    if (milliseconds < 0)
+        return QStringLiteral("—");
+    if (milliseconds < 1000)
+        return QStringLiteral("%1 ms").arg(milliseconds);
+    if (milliseconds < 60000)
+        return QStringLiteral("%1 秒").arg(QString::number(milliseconds / 1000.0, 'f', 1));
+    if (milliseconds < 3600000)
+        return QStringLiteral("%1 分").arg(QString::number(milliseconds / 60000.0, 'f', 1));
+    return QStringLiteral("%1 时").arg(QString::number(milliseconds / 3600000.0, 'f', 1));
+}
+
 AlarmEngine::AlarmEngine(QObject *parent)
     : QObject(parent)
 {
@@ -210,6 +238,78 @@ void AlarmEngine::acknowledgeAll()
         emit activeAlarmsChanged();
         emit historyChanged();
     }
+}
+
+bool AlarmEngine::handleAlarm(const QString &deviceId,
+                              const QString &tagId,
+                              AlarmDisposition disposition,
+                              const QString &handledBy,
+                              const QString &note)
+{
+    const QString key = makeKey(deviceId, tagId);
+    if (!m_active.contains(key))
+        return false; // 已恢复的记录不走这里
+
+    const QDateTime now = QDateTime::currentDateTime();
+
+    // 活动告警与历史里对应的那条必须**一起写**：只改一边，面板和历史就会对不上，
+    // 而这种"两处状态不一致"的 bug 现场极难复现、排查代价很高。
+    const auto apply = [&](AlarmRecord &record) {
+        record.disposition = disposition;
+        record.handledBy = handledBy;
+        record.handledAt = now;
+        record.handlingNote = note;
+        record.acknowledged = true; // 都写了处理结论，自然也算已确认
+    };
+
+    apply(m_active[key]);
+    for (AlarmRecord &record : m_history) {
+        if (makeKey(record.deviceId, record.tagId) == key && record.active) {
+            apply(record);
+            break;
+        }
+    }
+
+    Log::info(QStringLiteral("告警已处理 %1/%2：%3（处理人 %4）")
+                  .arg(deviceId,
+                       tagId,
+                       alarmDispositionName(disposition),
+                       handledBy.isEmpty() ? QStringLiteral("未署名") : handledBy));
+
+    emit alarmHandled(deviceId, tagId, disposition);
+    emit activeAlarmsChanged();
+    emit historyChanged();
+    return true;
+}
+
+int AlarmEngine::handledCount() const
+{
+    int count = 0;
+    for (const AlarmRecord &record : m_history) {
+        if (record.handled())
+            ++count;
+    }
+    return count;
+}
+
+qint64 AlarmEngine::averageHandleDurationMs() const
+{
+    qint64 total = 0;
+    int samples = 0;
+
+    for (const AlarmRecord &record : std::as_const(m_history)) {
+        if (!record.handled() || !record.time.isValid())
+            continue;
+
+        const qint64 delta = record.time.msecsTo(record.handledAt);
+        if (delta < 0)
+            continue; // 系统时间被改过导致的倒挂样本直接丢弃，别让它把平均值带偏
+
+        total += delta;
+        ++samples;
+    }
+
+    return samples > 0 ? (total / samples) : -1;
 }
 
 void AlarmEngine::clearAlarm(const QString &deviceId, const QString &tagId)

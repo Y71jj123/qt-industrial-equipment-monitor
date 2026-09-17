@@ -31,6 +31,27 @@ enum class AlarmKind
 /// 告警类型的中文名。
 QString alarmKindName(AlarmKind kind);
 
+/// 处理结论分类（工单闭环用）。
+///
+/// 分这个类不是为了好看 —— 现场真正要回答的是"这批告警里有多少是真故障"、
+/// "误报占几成"。有了这个字段，报表才能给出可用结论，而不只是告警条数。
+enum class AlarmDisposition
+{
+    Resolved = 0,   ///< 已处理恢复
+    Maintained = 1, ///< 停机检修
+    FalseAlarm = 2, ///< 误报
+    Ignored = 3     ///< 观察中 / 暂不处理
+};
+
+/// 处理结论的中文名。
+QString alarmDispositionName(AlarmDisposition disposition);
+
+/// 把时长（毫秒）格式化成现场读得懂的文案："45.0 秒" / "12.4 分" / "1.2 时"。
+///
+/// 传入负值（表示"没有样本"）时返回 "—"。放在这里是因为告警面板与总览页都要用，
+/// 各写一份迟早会出现两处显示不一致。
+QString formatHandleDuration(qint64 milliseconds);
+
 /// 一条告警规则。
 ///
 /// `kind == Range` 时用 [lowLimit, highLimit] 判阈值；
@@ -60,6 +81,17 @@ struct AlarmRecord
     QString message;                        ///< 可读描述
     bool active = true;                     ///< 是否仍在活动（尚未恢复 / 未消警）
     bool acknowledged = false;              ///< 是否已被人工确认
+
+    // ---- 工单闭环：处理结论 ----
+    // 设计意图：把"知道有告警"和"处理完了"分成两件事。
+    // acknowledged 只表示"看见了"，handledAt 才表示"有人写了结论"。
+    AlarmDisposition disposition = AlarmDisposition::Resolved; ///< 处理结论分类
+    QString handledBy;      ///< 处理人
+    QDateTime handledAt;    ///< 处理时间（无效 = 尚未录入结论）
+    QString handlingNote;   ///< 处理结论 / 备注
+
+    /// 是否已录入处理结论。
+    bool handled() const { return handledAt.isValid(); }
 };
 
 /// 告警引擎：吃进数据点，吐出告警。
@@ -89,10 +121,33 @@ public:
     QList<AlarmRecord> history() const;
 
     /// 人工确认某条活动告警（标记已确认，不改变其活动状态）。
+    ///
+    /// 注意与 handleAlarm() 的区别：**确认只是"看见了"，处理才代表"有人写了结论"**。
+    /// 现场真正要考核的是后者。
     void acknowledge(const QString &deviceId, const QString &tagId);
 
     /// 确认全部活动告警。
     void acknowledgeAll();
+
+    /// 录入处理结论（工单闭环）。
+    ///
+    /// 只有**活动告警**能被处理 —— 已恢复的记录再补结论属于事后补录，不在本接口范围内。
+    /// 处理会顺带把该条标记为已确认（现场的"知道了"和"处理了"本来就是一次动作的两半）。
+    ///
+    /// @return 该点位没有活动告警时返回 false。
+    bool handleAlarm(const QString &deviceId,
+                     const QString &tagId,
+                     AlarmDisposition disposition,
+                     const QString &handledBy,
+                     const QString &note);
+
+    /// 已录入处理结论的告警条数（统计范围：全部历史）。
+    int handledCount() const;
+
+    /// 平均处理时长 MTTR（毫秒），统计范围为全部历史里已录入结论的告警。
+    ///
+    /// **没有任何样本时返回 -1** —— 界面据此显示"—"，而不是一个会误导人的 0。
+    qint64 averageHandleDurationMs() const;
 
     /// 人工消警：把某点位的活动告警标记为已消除（active = false）。
     void clearAlarm(const QString &deviceId, const QString &tagId);
@@ -120,6 +175,9 @@ signals:
     /// 历史或确认状态发生变化，界面据此刷新告警面板。
     void historyChanged();
 
+    /// 某条告警录入了处理结论。上层据此写操作留痕（谁、什么时候、怎么处理的）。
+    void alarmHandled(const QString &deviceId, const QString &tagId, AlarmDisposition disposition);
+
 private:
     static QString makeKey(const QString &deviceId, const QString &tagId);
     static AlarmLevel judgeLevel(double value, double low, double high);
@@ -141,3 +199,4 @@ Q_DECLARE_METATYPE(AlarmRule)
 Q_DECLARE_METATYPE(AlarmRecord)
 Q_DECLARE_METATYPE(AlarmLevel)
 Q_DECLARE_METATYPE(AlarmKind)
+Q_DECLARE_METATYPE(AlarmDisposition)

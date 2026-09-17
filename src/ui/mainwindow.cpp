@@ -297,7 +297,7 @@ void MainWindow::setupUi()
     m_rightTabs->addTab(m_chartView, QStringLiteral("趋势曲线"));
 #endif
 
-    m_alarmPanel = new AlarmPanel(m_alarmEngine, m_deviceManager, this);
+    m_alarmPanel = new AlarmPanel(m_alarmEngine, m_deviceManager, m_storage, m_userName, this);
     m_rightTabs->addTab(m_alarmPanel, QStringLiteral("告警"));
 
     // 「告警」看的是当前活动告警，紧挨着的「告警历史」查的是库里存下来的历史
