@@ -51,3 +51,26 @@ include(CTest)
 if(BUILD_TESTING AND Qt${QT_VERSION_MAJOR}Test_FOUND)
     add_subdirectory(tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# 安装与打包（CPack）
+#
+# 目标是产出一个**解压即用**的压缩包：里面不仅有 exe，还有 Qt 运行时依赖。
+# 少了依赖的包在现场就是"双击报找不到 Qt6Core.dll"，等于没打。
+# ---------------------------------------------------------------------------
+install(FILES README.md LICENSE DESTINATION . OPTIONAL)
+
+include(CPack)
+set(CPACK_PACKAGE_NAME "qt-industrial-equipment-monitor")
+set(CPACK_PACKAGE_VENDOR "Y71jj123")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "工业设备远程监控管理平台桌面客户端")
+# 文件名用纯 ASCII，避免各种解压工具在中文名上翻车
+if(WIN32)
+    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-win64")
+else()
+    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-linux-x64")
+endif()
+# 默认 ZIP：不依赖任何额外工具链。
+# 想做成点下一步就能装的安装器，在配置时加 -DCPACK_GENERATOR=NSIS 即可（需本机有 makensis）。
+set(CPACK_GENERATOR "ZIP")
