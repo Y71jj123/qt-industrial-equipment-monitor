@@ -148,7 +148,8 @@ endif()
 # plugins/protocols/ 下，而可执行文件的输出目录正是本层决定的 ——
 # 放在这里就不用去顶层硬编码一个 "src" 路径。
 # ---------------------------------------------------------------------------
-set(MONITOR_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+# 协议插件的输出目录 = 可执行文件旁边的 plugins/protocols/
+# （MONITOR_SRC_DIR 由顶层定义，插件与性能夹具共用）
 set(MONITOR_PROTOCOL_DIR "${CMAKE_CURRENT_BINARY_DIR}/plugins/protocols")
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../plugins" "${CMAKE_CURRENT_BINARY_DIR}/plugins")
 
