@@ -9,12 +9,15 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
 #include <QVariant>
+
+#include <algorithm>
 
 namespace {
 
@@ -49,6 +52,7 @@ QList<TagPoint> pointsFromJson(const QString &text)
 DataStorage::DataStorage(QObject *parent, const QString &databasePath)
     : QObject(parent)
     , m_databasePath(databasePath.isEmpty() ? defaultDatabasePath() : databasePath)
+    , m_spillPath(m_databasePath + QStringLiteral(".pending.jsonl"))
 {
 }
 
@@ -82,6 +86,10 @@ bool DataStorage::open()
         m_db.close();
         return false;
     }
+
+    // 先把上次没落库的积压补传进来，再开始接收新数据 ——
+    // 顺序反过来的话，历史查询里会出现"新的在前、补传的在后"的时间空洞。
+    replaySpillFile();
 
     // 攒批提交的定时器：住在本对象所在线程（GUI），SQLite 连接不跨线程
     if (!m_flushTimer) {
@@ -241,12 +249,10 @@ bool DataStorage::insertSample(const QString &deviceId,
                                double value,
                                const QDateTime &time)
 {
-    if (!m_db.isOpen()) {
-        m_lastError = QStringLiteral("数据库未打开");
-        return false;
-    }
-
-    // 只入队：真正的 INSERT 交给 flush() 一次性事务提交。
+    // ⚠️ 这里**故意不判断数据库是否打开**：数据一律先进内存队列，由 flush() 决定
+    // 是落库还是溢出到磁盘队列。以前这里是"库没打开就 return false"，
+    // 结果数据库一旦启动失败，所有采样就被逐条拒绝 —— 恰好丢掉的全部数据。
+    //
     // 时间戳在这里就定下来，免得排队 200ms 后采样时刻全被"拉平"。
     PendingSample sample;
     sample.time = time.isValid() ? time : QDateTime::currentDateTime();
@@ -268,9 +274,9 @@ void DataStorage::flush()
         return;
 
     if (!m_db.isOpen()) {
-        // 库没打开，攒着只会无限增长；丢弃并说明丢了多少
-        Log::warn(QStringLiteral("数据库未打开，丢弃 %1 条未落库的采样数据")
-                      .arg(m_pendingSamples.size()));
+        // 库不可用：**不丢数据**，整批溢出到磁盘队列，等下次 open() 时补写。
+        // 以前这里是直接丢弃并打一条警告 —— 对工业数据来说，"丢掉"永远是最差的选项。
+        spillBatch(m_pendingSamples);
         m_pendingSamples.clear();
         return;
     }
@@ -282,7 +288,8 @@ void DataStorage::flush()
     // 合并后几百条数据只落一次盘 —— 这才是批量写入真正的收益所在。
     if (!m_db.transaction()) {
         m_lastError = m_db.lastError().text();
-        Log::warn(QStringLiteral("采样数据批量写入失败（事务开启失败）: %1").arg(m_lastError));
+        Log::warn(QStringLiteral("采样批量写入失败（事务开启失败），转入磁盘队列: %1").arg(m_lastError));
+        spillBatch(batch);
         return;
     }
 
@@ -311,11 +318,178 @@ void DataStorage::flush()
 
     if (!ok) {
         m_db.rollback();
-        // 本批整批回滚并丢弃：采样是持续流，卡住的数据比丢掉的数据更麻烦
-        Log::warn(QStringLiteral("采样数据批量写入失败，本批 %1 条已丢弃: %2")
+        // 整批回滚后**转入磁盘队列**而不是丢弃：回滚意味着这一批一条都没落库，
+        // 留着它们才能保证"数据一条不少"。
+        Log::warn(QStringLiteral("采样批量写入失败，本批 %1 条转入磁盘队列: %2")
                       .arg(batch.size())
                       .arg(m_lastError));
+        spillBatch(batch);
     }
+}
+
+bool DataStorage::spillBatch(const QList<PendingSample> &batch)
+{
+    if (batch.isEmpty())
+        return true;
+
+    // 队列文件无上限早晚会把磁盘写满，所以写入前先立一道闸门。
+    // 超限时的选择是"停止接收"而不是"悄悄丢掉最老的"——后者会让运维永远不知道丢了什么。
+    constexpr qint64 kMaxSpillBytes = 64LL * 1024 * 1024; // 64 MB
+    if (QFileInfo(m_spillPath).size() > kMaxSpillBytes) {
+        Log::error(QStringLiteral("采样磁盘队列已超过 %1 MB，暂停止接收新数据以免写满磁盘")
+                       .arg(kMaxSpillBytes / 1024 / 1024));
+        return false;
+    }
+
+    QFile file(m_spillPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        m_lastError = file.errorString();
+        Log::error(QStringLiteral("采样磁盘队列写入失败: %1").arg(m_lastError));
+        return false;
+    }
+
+    // 用 JSON Lines（一行一条）而不是一个大 JSON 数组：
+    // 追加写不必读回整个文件，且进程被强杀时已写完的行仍然是完整可解析的。
+    QByteArray buffer;
+    for (const PendingSample &sample : batch) {
+        QJsonObject object;
+        object.insert(QStringLiteral("t"), sample.time.toString(Qt::ISODateWithMs));
+        object.insert(QStringLiteral("d"), sample.deviceId);
+        object.insert(QStringLiteral("g"), sample.tagId);
+        object.insert(QStringLiteral("v"), sample.value);
+        buffer += QJsonDocument(object).toJson(QJsonDocument::Compact);
+        buffer += '\n';
+    }
+
+    const bool written = (file.write(buffer) == buffer.size());
+    file.close();
+
+    if (!written) {
+        m_lastError = file.errorString();
+        Log::error(QStringLiteral("采样磁盘队列写入不完整: %1").arg(m_lastError));
+        return false;
+    }
+
+    Log::warn(QStringLiteral("数据库不可用，%1 条采样已转入磁盘队列待补传").arg(batch.size()));
+    return true;
+}
+
+qint64 DataStorage::spillBacklogCount() const
+{
+    QFile file(m_spillPath);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly))
+        return 0;
+
+    // 分块数换行符，不把整个文件读进内存
+    qint64 lines = 0;
+    constexpr int kChunkBytes = 64 * 1024;
+    while (!file.atEnd())
+        lines += file.read(kChunkBytes).count('\n');
+    file.close();
+    return lines;
+}
+
+void DataStorage::replaySpillFile()
+{
+    QFile file(m_spillPath);
+    if (!file.exists())
+        return;
+
+    if (!file.open(QIODevice::ReadOnly)) {
+        Log::warn(QStringLiteral("磁盘队列无法打开，跳过补传: %1").arg(file.errorString()));
+        return;
+    }
+
+    QList<PendingSample> recovered;
+    int brokenLines = 0;
+
+    while (!file.atEnd()) {
+        const QByteArray line = file.readLine().trimmed();
+        if (line.isEmpty())
+            continue;
+
+        QJsonParseError parseError{};
+        const QJsonDocument document = QJsonDocument::fromJson(line, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            ++brokenLines;
+            continue;
+        }
+
+        const QJsonObject object = document.object();
+        PendingSample sample;
+        sample.time = QDateTime::fromString(object.value(QStringLiteral("t")).toString(),
+                                            Qt::ISODateWithMs);
+        sample.deviceId = object.value(QStringLiteral("d")).toString();
+        sample.tagId = object.value(QStringLiteral("g")).toString();
+        sample.value = object.value(QStringLiteral("v")).toDouble();
+
+        if (!sample.time.isValid() || sample.deviceId.isEmpty() || sample.tagId.isEmpty()) {
+            ++brokenLines;
+            continue;
+        }
+        recovered.append(sample);
+    }
+    file.close();
+
+    if (recovered.isEmpty()) {
+        if (brokenLines > 0)
+            Log::warn(QStringLiteral("磁盘队列里 %1 行无法解析，已连同队列文件一并清理").arg(brokenLines));
+        QFile::remove(m_spillPath);
+        return;
+    }
+
+    // 按时间升序补写："补传"的语义就是让这段数据回到历史序列里它原本该在的位置。
+    std::sort(recovered.begin(), recovered.end(),
+              [](const PendingSample &left, const PendingSample &right) {
+                  return left.time < right.time;
+              });
+
+    if (!m_db.transaction()) {
+        m_lastError = m_db.lastError().text();
+        Log::warn(QStringLiteral("补传未执行（事务开启失败），队列保留待下次启动重试: %1")
+                      .arg(m_lastError));
+        return;
+    }
+
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "INSERT INTO samples (ts, device, tag, value) VALUES (:ts, :device, :tag, :value)"));
+
+    bool ok = true;
+    for (const PendingSample &sample : recovered) {
+        query.bindValue(QStringLiteral(":ts"), sample.time);
+        query.bindValue(QStringLiteral(":device"), sample.deviceId);
+        query.bindValue(QStringLiteral(":tag"), sample.tagId);
+        query.bindValue(QStringLiteral(":value"), sample.value);
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            ok = false;
+            break;
+        }
+    }
+
+    if (ok && !m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        ok = false;
+    }
+
+    if (!ok) {
+        // 回滚了就等于一条都没写进去，队列文件绝对不能删，否则这批数据就真没了。
+        m_db.rollback();
+        Log::warn(QStringLiteral("补传失败，%1 条采样仍留在磁盘队列: %2")
+                      .arg(recovered.size())
+                      .arg(m_lastError));
+        return;
+    }
+
+    // **确认提交成功之后**才删队列文件：先删后写，一崩就丢。
+    QFile::remove(m_spillPath);
+
+    Log::info(QStringLiteral("已补传 %1 条积压采样%2")
+                  .arg(recovered.size())
+                  .arg(brokenLines > 0
+                           ? QStringLiteral("（另有 %1 行无法解析，已跳过）").arg(brokenLines)
+                           : QString()));
 }
 
 QList<DataStorage::Sample> DataStorage::querySamples(const QString &deviceId,

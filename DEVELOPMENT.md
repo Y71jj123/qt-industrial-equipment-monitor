@@ -87,6 +87,15 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
   用一个事务批量提交（`kSampleFlushIntervalMs` / `kSampleBatchSize`）。
   退出前 `aboutToQuit → flush()` 保底，别把这一步删了。
   **SQLite 连接不可跨线程**：提交由 GUI 线程的 QTimer 驱动，不要挪进工作线程。
+- **数据不丢（溢出队列）**，两条铁律别改回去：
+  1. `insertSample()` **不判断数据库是否打开**，一律入队 —— 以前是"库没打开就 return false"，
+     结果数据库启动失败时丢掉的是**全部**采样。落库还是溢出，交给 `flush()` 决定。
+  2. `flush()` 写库失败时**不丢弃**，把整批 `spillBatch()` 追加到 `<数据库名>.pending.jsonl`
+     （JSON Lines：追加写不用读回整个文件，进程被强杀时已写完的行仍可解析）。
+     `open()` 里 `replaySpillFile()` 按时间升序补传，**只有 commit 成功才 `QFile::remove`** ——
+     先删后写，一崩就丢。回滚了必须保留文件。
+  3. 判据：**"数据一条不少"优先于"别让文件变大"**。队列超 64 MB 时的选择是停止接收并报错，
+     不是悄悄丢掉最老的一批。
 - **界面节流**：`MainWindow` 把采样值攒 100ms 合并刷新一次表格 / 曲线 / 面板
   （`kUiRefreshIntervalMs`）。但**落库与告警判定不节流** —— 数据一条都不能少。
 

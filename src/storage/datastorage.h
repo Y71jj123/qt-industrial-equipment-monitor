@@ -80,8 +80,10 @@ public:
     static constexpr int kSampleFlushIntervalMs = 200;
 
     /// 写入一条采样记录。**只入内存队列，不立即落库** ——
-    /// 返回值表示"已入队"，真正的落库结果是异步的（失败会记日志）。
-    /// 数据库未打开时返回 false。
+    /// 返回值表示"已入队"，真正的落库结果是异步的。
+    ///
+    /// 注意：**数据库没打开也返回 true**。数据先入队，由 flush() 决定落库还是
+    /// 溢出到磁盘队列 —— 采样是持续流，任何一条都不该因为库暂时不可用而被丢掉。
     bool insertSample(const QString &deviceId,
                       const QString &tagId,
                       double value,
@@ -90,6 +92,10 @@ public:
     /// 立即把队列里的数据事务提交落库（队列为空时什么都不做）。
     /// 退出前必须在 aboutToQuit 里调用，否则最后一批数据会丢。
     void flush();
+
+    /// 磁盘溢出队列里残留的采样条数（数据库不可用期间攒下的）。
+    /// 0 表示没有积压；界面可据此提示"有数据待补传"。
+    qint64 spillBacklogCount() const;
 
     /// 按设备 + 点位 + 时间区间查询历史数据（按时间升序）。
     QList<Sample> querySamples(const QString &deviceId,
@@ -177,11 +183,26 @@ private:
         double value = 0.0;
     };
 
+    /// 把一批采样**溢出写入磁盘队列**（数据库不可用时的兜底）。
+    ///
+    /// 「断线」在这里指**落库链路不可用**（数据库没打开 / 事务提交失败），
+    /// 不是设备链路 —— 设备断开时根本采不到值，谈不上缓存。
+    /// 返回是否成功写盘。
+    bool spillBatch(const QList<PendingSample> &batch);
+
+    /// 重放磁盘队列（启动时调用）。按时间升序补写进库，成功后清空队列文件。
+    ///
+    /// **不重复**：只有写库失败的批次才会进队列，成功的批次绝不重放；
+    /// 重放成功即整文件删除，所以也不会重复写第二次。
+    void replaySpillFile();
+
     /// 队列 + 定时器都只在 GUI 线程碰，不需要加锁。
     QList<PendingSample> m_pendingSamples;
     QTimer *m_flushTimer = nullptr;
 
     QString m_databasePath;
+    /// 采样溢出队列文件：与数据库同目录，文件名派生自数据库名。
+    QString m_spillPath;
     QSqlDatabase m_db;
     mutable QString m_lastError;
 };
