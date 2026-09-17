@@ -41,6 +41,7 @@ void Log::init(const QString &filePath)
     const QFileInfo info(filePath);
     QDir().mkpath(info.absolutePath());
 
+    QMutexLocker locker(&m_mutex);
     m_file.setFileName(filePath);
     m_fileReady = m_file.open(QIODevice::Append | QIODevice::Text);
     if (!m_fileReady)
@@ -67,12 +68,17 @@ void Log::write(Level level, const QString &message)
         break;
     }
 
-    if (m_fileReady) {
-        m_file.write(line.toUtf8());
-        m_file.write("\n");
-        m_file.flush();
+    {
+        // 锁只护住文件：多线程同时写 QFile 会串行错乱
+        QMutexLocker locker(&m_mutex);
+        if (m_fileReady) {
+            m_file.write(line.toUtf8());
+            m_file.write("\n");
+            m_file.flush();
+        }
     }
 
+    // 广播放在锁外：接收方可能就在别的线程排队处理，持锁发信号没有必要
     emit messageLogged(static_cast<int>(level), message);
 }
 

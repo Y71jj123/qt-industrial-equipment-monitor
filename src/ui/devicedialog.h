@@ -21,6 +21,9 @@ class DeviceDialog : public QDialog
 public:
     explicit DeviceDialog(QWidget *parent = nullptr);
 
+    /// 提供可选的分组列表。可编辑下拉：既能选已有的，也能直接敲一个新的。
+    void setGroups(const QStringList &groups);
+
     /// 用已有设备填充（编辑模式；会保留原设备 id）。
     void setDevice(const DeviceInfo &device);
 
@@ -37,6 +40,7 @@ private:
     QList<TagPoint> collectPoints() const;
 
     QLineEdit *m_nameEdit = nullptr;
+    QComboBox *m_groupBox = nullptr;
     QComboBox *m_protocolBox = nullptr;
     QLineEdit *m_hostEdit = nullptr;
     QSpinBox *m_portSpin = nullptr;

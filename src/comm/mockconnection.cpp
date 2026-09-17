@@ -64,11 +64,8 @@ MockConnection::MockConnection(QObject *parent)
         m_base.insert(spec.id, spec.baseline);
         m_values.insert(spec.id, spec.baseline);
     }
-
-    // 定时器属于创建它的线程；本类对象若被 moveToThread，定时器需随对象重建。
-    m_timer = new QTimer(this);
-    m_timer->setInterval(m_intervalMs);
-    connect(m_timer, &QTimer::timeout, this, &MockConnection::tick);
+    // 这里**不建定时器**：本对象会被 moveToThread 到采集线程，
+    // 而 QTimer 必须在它最终所属的线程里创建 —— 统一留到 open() 里做。
 }
 
 MockConnection::~MockConnection()
@@ -85,6 +82,12 @@ bool MockConnection::open(const QString &host, quint16 port)
     m_port = port;
     m_open = true;
 
+    // open() 由采集线程调用，定时器在这里诞生就一直属于那条线程
+    if (!m_timer) {
+        m_timer = new QTimer(this);
+        m_timer->setInterval(m_intervalMs);
+        connect(m_timer, &QTimer::timeout, this, &MockConnection::tick);
+    }
     m_timer->start();
     Log::info(QStringLiteral("模拟连接已建立: %1:%2").arg(host).arg(port));
     emit opened();

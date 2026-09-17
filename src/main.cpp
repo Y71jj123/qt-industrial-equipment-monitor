@@ -18,8 +18,8 @@ int main(int argc, char *argv[])
     QApplication::setApplicationVersion(QStringLiteral(APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("Y71jj123"));
 
-    // 全局样式：工业风浅色主题（集中维护在 ui/theme.cpp）
-    app.setStyleSheet(applicationStyleSheet());
+    // 全局样式：沿用用户上次选择的主题（样式表与调色板集中维护在 ui/theme.cpp）
+    applyTheme(loadSavedTheme());
 
     // 日志与数据库都放在系统标准的应用数据目录，不跟着工作目录跑
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -39,6 +39,10 @@ int main(int argc, char *argv[])
     if (!storage.open()) {
         Log::warn(QStringLiteral("本地数据库打开失败，历史数据功能将不可用"));
     }
+
+    // 采样是攒批落库的，靠 200ms 定时器驱动；事件循环一停定时器就不再触发，
+    // 所以退出前必须手动刷一次，否则最后一批数据会丢在内存里。
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &storage, &DataStorage::flush);
 
     // 核心层
     DeviceManager deviceManager;

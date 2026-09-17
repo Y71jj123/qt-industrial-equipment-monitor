@@ -2,6 +2,7 @@
 
 #include "core/devicemanager.h"
 #include "storage/datastorage.h"
+#include "ui/advancedchartview.h"
 #include "utils/logger.h"
 
 #include <QComboBox>
@@ -19,7 +20,6 @@
 #ifdef HAVE_QT_CHARTS
 #include <QPainter>
 #include <QtCharts/QChart>
-#include <QtCharts/QChartView>
 #include <QtCharts/QDateTimeAxis>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
@@ -118,18 +118,24 @@ void HistoryPanel::setupUi()
     m_series->attachAxis(m_axisX);
     m_series->attachAxis(m_axisY);
 
-    m_chartView = new QChartView(m_chart, this);
-    m_chartView->setRenderHint(QPainter::Antialiasing);
+    // 交互式图表视图：滚轮缩放 / 拖拽平移 / 右键复位 / 悬停读数都在它里面
+    m_chartView = new AdvancedChartView(m_chart, this);
     content->addWidget(m_chartView);
 #endif
 
     content->setStretchFactor(0, 2);
     content->setStretchFactor(1, 3);
 
+    auto *chartHint = new QLabel(
+        QStringLiteral("曲线：滚轮缩放 ｜ Ctrl+滚轮缩放纵轴 ｜ 按住左键拖拽平移 ｜ 右键复位到查询范围"),
+        this);
+    chartHint->setObjectName(QStringLiteral("panelHint"));
+
     auto *layout = new QVBoxLayout(this);
     layout->addLayout(filterRow);
     layout->addWidget(m_summary);
     layout->addWidget(content);
+    layout->addWidget(chartHint);
 
     connect(m_deviceBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &HistoryPanel::onDeviceChanged);
@@ -249,6 +255,10 @@ void HistoryPanel::onQuery()
         m_axisX->setRange(from, to);
         const double pad = qMax(1.0, (hi - lo) * 0.1);
         m_axisY->setRange(lo - pad, hi + pad);
+
+        // 记下这次查询的基准范围：用户缩放 / 平移后右键复位，回到的就是它
+        m_chartView->setHomeRange(from, to, lo - pad, hi + pad);
+        m_chartView->setAutoFollow(true);
     }
 #endif
 

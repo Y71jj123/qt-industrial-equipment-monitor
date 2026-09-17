@@ -8,6 +8,10 @@ set(PROJECT_SOURCES
     ui/mainwindow.cpp
     ui/alarmpanel.h
     ui/alarmpanel.cpp
+    ui/alarmhistorypanel.h
+    ui/alarmhistorypanel.cpp
+    ui/alarmnotifier.h
+    ui/alarmnotifier.cpp
     ui/devicedetailpanel.h
     ui/devicedetailpanel.cpp
     ui/devicedialog.h
@@ -22,6 +26,8 @@ set(PROJECT_SOURCES
     ui/reportpanel.cpp
     ui/logindialog.h
     ui/logindialog.cpp
+    ui/advancedchartview.h
+    ui/advancedchartview.cpp
 
     # Communication layer (protocol abstraction)
     comm/deviceconnection.h
@@ -47,6 +53,10 @@ set(PROJECT_SOURCES
     # Utils
     utils/logger.h
     utils/logger.cpp
+    utils/configio.h
+    utils/configio.cpp
+    utils/excelexporter.h
+    utils/excelexporter.cpp
 )
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
