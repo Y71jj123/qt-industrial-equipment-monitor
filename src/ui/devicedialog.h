@@ -47,8 +47,12 @@ private:
     QSpinBox *m_slaveSpin = nullptr;
     QSpinBox *m_intervalSpin = nullptr;
     QLineEdit *m_topicEdit = nullptr;
+    QLineEdit *m_userEdit = nullptr;
+    QLineEdit *m_passwordEdit = nullptr;
     QLabel *m_slaveLabel = nullptr;
     QLabel *m_topicLabel = nullptr;
+    QLabel *m_userLabel = nullptr;
+    QLabel *m_passwordLabel = nullptr;
     QTableWidget *m_pointTable = nullptr;
 
     DeviceInfo m_device; ///< 编辑模式下保留原 id

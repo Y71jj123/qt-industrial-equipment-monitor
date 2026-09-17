@@ -10,6 +10,7 @@
 #include "ui/devicedetailpanel.h"
 #include "ui/devicedialog.h"
 #include "ui/historypanel.h"
+#include "ui/overviewpanel.h"
 #include "ui/reportpanel.h"
 #include "ui/rulepanel.h"
 #include "utils/logger.h"
@@ -265,6 +266,12 @@ void MainWindow::setupUi()
 
     // 右侧功能页
     m_rightTabs = new QTabWidget(this);
+
+    // 「总览」放第一个：打开软件第一眼就是全局态势（在线率 / 告警 / 数据量），
+    // 而不是一张等着刷新的空表格。
+    m_overviewPanel = new OverviewPanel(m_deviceManager, m_alarmEngine, m_storage, m_scheduler, this);
+    m_rightTabs->addTab(m_overviewPanel, QStringLiteral("总览"));
+
     m_rightTabs->addTab(m_valueTable, QStringLiteral("实时数据"));
 
 #ifdef HAVE_QT_CHARTS
@@ -428,6 +435,16 @@ void MainWindow::setupConnections()
     m_notifier = new AlarmNotifier(this, m_alarmEngine, m_deviceManager);
     connect(m_notifier, &AlarmNotifier::alarmActivated,
             this, &MainWindow::onAlarmToastActivated);
+
+    // 总览页点某台设备的卡片 → 在左树里选中它，并下钻到「实时数据」
+    connect(m_overviewPanel, &OverviewPanel::deviceActivated, this,
+            [this](const QString &deviceId) {
+                if (QTreeWidgetItem *item = findDeviceItem(deviceId)) {
+                    m_deviceTree->setCurrentItem(item);
+                    m_deviceTree->scrollToItem(item);
+                }
+                m_rightTabs->setCurrentWidget(m_valueTable);
+            });
 
 #ifdef HAVE_QT_CHARTS
     // 趋势图的交互：暂停跟随时把状态写进标题，"曲线为什么不动了"要一眼看得出来
@@ -818,6 +835,8 @@ void MainWindow::onDeviceTreeSelectionChanged()
 
 void MainWindow::reloadDeviceDependentPanels()
 {
+    if (m_overviewPanel)
+        m_overviewPanel->refresh();
     if (m_historyPanel)
         m_historyPanel->reloadDevices();
     if (m_alarmHistoryPanel)

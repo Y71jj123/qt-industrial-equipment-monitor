@@ -23,6 +23,10 @@ class QTimer;
 ///   - **JSON**：载荷是对象，逐字段上报
 ///       载荷 {"temperature":42.5,"pressure":53}   →  temperature / pressure 各来一次
 /// 因此订阅时建议用通配主题，例如 `factory/line1/#`。
+///
+/// 接入鉴权：broker 要求账号时，通过 setCredentials() 传入用户名 / 密码，
+/// CONNECT 报文会带上 User Name / Password 标志与字段（3.1.1 的明文形式，
+/// 不做 TLS 时本质上等同于明文口令，只适合内网）。
 class MqttConnection : public DeviceConnection
 {
     Q_OBJECT
@@ -42,6 +46,17 @@ public:
 
     void setClientId(const QString &clientId) { m_clientId = clientId; }
     void setKeepAliveSec(int seconds) { m_keepAliveSec = qMax(5, seconds); }
+
+    /// 设置接入账号 / 密码（两者皆空即匿名接入）。
+    ///
+    /// 必须在 open() 之前调用 —— CONNECT 报文只在建连那一刻发一次，
+    /// 连上之后再改就只剩下重连才生效，容易让人以为"填了没用"。
+    void setCredentials(const QString &username, const QString &password)
+    {
+        m_username = username;
+        m_password = password;
+    }
+
     QString subscribeTopic() const { return m_topic; }
 
 private:
@@ -68,9 +83,16 @@ private:
     quint16 m_port = 1883;
     QString m_clientId;
     QString m_topic;                      ///< 订阅主题（支持 + / # 通配）
+    QString m_username;                   ///< 接入账号（空 = 匿名）
+    QString m_password;                   ///< 接入密码
     int m_keepAliveSec = 60;
     int m_timeoutMs = 3000;
     quint16 m_packetId = 0;
     bool m_open = false;
+    /// CONNACK 的到达情况。**必须由 onReadyRead 置位**：
+    /// 建连后数据先经 readyRead → onReadyRead 进 m_buffer，
+    /// open() 里再去读 socket 只会读到空 —— 这里用标志位把结论传回去。
+    bool m_connAckReceived = false;
+    bool m_connRejected = false;
     QHash<QString, QVariant> m_lastValues; ///< 最近一次收到的值，供 readTag 返回
 };

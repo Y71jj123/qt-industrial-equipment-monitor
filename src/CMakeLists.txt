@@ -12,6 +12,8 @@ set(PROJECT_SOURCES
     ui/alarmhistorypanel.cpp
     ui/alarmnotifier.h
     ui/alarmnotifier.cpp
+    ui/overviewpanel.h
+    ui/overviewpanel.cpp
     ui/devicedetailpanel.h
     ui/devicedetailpanel.cpp
     ui/devicedialog.h

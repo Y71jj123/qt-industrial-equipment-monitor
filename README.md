@@ -17,6 +17,7 @@
 
 - [x] 设备接入管理：增删改设备，配置 IP/端口/从站地址，**支持分组**，断线自动重连（指数退避 1s→30s）
 - [x] 设备状态总览：在线 / 离线 / 故障三态 + 状态灯，左侧分组树
+- [x] **总览仪表盘（首页）**：KPI 数字墙（设备数 / 在线率 / 活动告警 / 采样量）+ 每台设备一张状态卡（状态灯 + 关键点位实时值 + 告警数），**点卡片直接下钻到该设备**
 - [x] 实时数据采集：按采集周期轮询数据点，表格实时刷新（UI 侧 100ms 节流），**每台设备独立采集线程**
 - [x] 实时/历史曲线：基于 `Qt Charts`，实时滚动 + 历史区间查询，**滚轮缩放 / 拖拽平移 / 悬停十字准星读数**
 - [x] 告警引擎：阈值 / 变化率 / 离线三类告警，自动分级 + 告警列表，支持确认与消警
@@ -28,8 +29,9 @@
 - [x] 报表与统计：设备运行时长、采样点数、告警次数统计，**导出 Excel（.xls）**
 - [x] 配置管理：**设备 / 分组 / 规则一键导出导入（JSON）**
 - [x] 界面主题：**浅色 / 深色双主题一键切换**，矢量图标，设置持久化
+- [x] **MQTT 接入鉴权**：设备可配置用户名 / 密码，CONNECT 报文带 User Name / Password 字段；broker 拒绝时按返回码给出明确原因（如"用户名或密码错误"）
 
-> 全部核心功能已落地并完成一轮体验升级（界面视觉 / 告警体验 / 线程化架构 / 功能增强）。
+> 全部核心功能已落地，并完成两轮升级：第一轮为界面视觉 / 告警体验 / 线程化架构 / 功能增强，第二轮为总览仪表盘 / MQTT 接入鉴权。
 
 ## 技术栈
 
@@ -108,12 +110,13 @@ qt-industrial-equipment-monitor/
     ├── ui/                 # 界面层
     │   ├── theme.*             浅/深双主题 QSS + 矢量图标工厂
     │   ├── logindialog.*       登录 / 角色
-    │   ├── mainwindow.*        主窗口（分组设备树 + 9 个功能页 + 权限控制）
+    │   ├── mainwindow.*        主窗口（分组设备树 + 10 个功能页 + 权限控制）
+    │   ├── overviewpanel.*     总览仪表盘（KPI 卡片墙 + 设备状态卡 + 下钻）
     │   ├── alarmpanel.*        告警面板（列表 / 确认 / 消警）
     │   ├── alarmnotifier.*     告警通知（托盘 / 浮动 Toast / 声音）
     │   ├── alarmhistorypanel.* 告警历史独立查询面板
     │   ├── advancedchartview.* 趋势曲线增强视图（缩放 / 平移 / 准星）
-    │   ├── devicedialog.*      设备配置对话框（含分组）
+    │   ├── devicedialog.*      设备配置对话框（含分组与 MQTT 接入账号）
     │   ├── devicedetailpanel.* 设备详情
     │   ├── historypanel.*      历史查询（表格 + 曲线 + CSV）
     │   ├── rulepanel.*         告警规则配置
@@ -204,12 +207,18 @@ python tools/modbus_slave_sim.py --port 5021 # 想模拟多台设备就换端口
 ```bash
 # 公共测试 broker（需联网）
 python tools/mqtt_publisher_sim.py --host broker.emqx.io --topic factory/line1
+
+# broker 要求账号时（与设备里的「接入账号 / 密码」填一致）
+python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
+    --username factory --password secret
 ```
 
-然后在客户端「添加设备」里填：协议 `MQTT`、地址 `broker.emqx.io`、端口 `1883`、
-订阅主题 `factory/line1/#`。脚本每秒发一次数据，支持 `--mode json`（默认）与 `--mode single` 两种格式。
+然后在客户端「添加设备」里填：协议 `MQTT`、地址 `broker.emqx.io`（或 `127.0.0.1`）、端口 `1883`、
+订阅主题 `factory/line1/#`；broker 若开启鉴权，再把「接入账号 / 接入密码」填上（**留空即匿名接入**）。
+脚本每秒发一次数据，支持 `--mode json`（默认）与 `--mode single` 两种格式。
 
 > 这两个脚本同时也是**协议格式的活文档** —— 想知道项目期望什么报文，看它们即可。
+> MQTT 鉴权采用 3.1.1 的明文 User Name / Password 字段，不加密时等同于明文口令，仅适合内网环境。
 
 ## 开发约定
 
@@ -225,6 +234,7 @@ python tools/mqtt_publisher_sim.py --host broker.emqx.io --topic factory/line1
 - [x] v0.3 远程控制 + 用户权限
 - [x] v0.4 报表导出与运维统计
 - [x] v0.5 体验升级：双主题视觉、告警通知体系、采集线程化、曲线交互、配置导入导出、Excel 报表
+- [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
 
 ## 许可
 

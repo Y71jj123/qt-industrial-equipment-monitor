@@ -157,7 +157,9 @@ bool DataStorage::createTables()
                        "  poll_ms    INTEGER,"
                        "  mqtt_topic TEXT,"
                        "  points     TEXT,"
-                       "  grp        TEXT"
+                       "  grp        TEXT,"
+                       "  username   TEXT,"
+                       "  password   TEXT"
                        ")"),
     };
 
@@ -174,10 +176,19 @@ bool DataStorage::createTables()
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("grp"), QStringLiteral("TEXT")))
         return false;
 
+    // MQTT 接入账号：同样是补列升级，老设备补出来是 NULL → 空串 → 匿名接入，行为不变。
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("username"), QStringLiteral("TEXT")))
+        return false;
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("password"), QStringLiteral("TEXT")))
+        return false;
+
     query.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_samples_lookup ON samples(device, tag, ts)"));
     query.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_alarms_lookup ON alarms(device, tag, ts)"));
+    // 总览仪表盘要按"时间区间"整体统计（不分设备），上面那条以 device 打头的索引帮不上忙
+    query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)"));
+    query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_alarms_ts ON alarms(ts)"));
     return true;
 }
 
@@ -548,8 +559,9 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "REPLACE INTO devices (id, name, host, port, slave, protocol, poll_ms, mqtt_topic,"
-        " points, grp)"
-        " VALUES (:id, :name, :host, :port, :slave, :protocol, :poll, :topic, :points, :grp)"));
+        " points, grp, username, password)"
+        " VALUES (:id, :name, :host, :port, :slave, :protocol, :poll, :topic, :points, :grp,"
+        " :user, :pass)"));
     query.bindValue(QStringLiteral(":id"), device.id);
     query.bindValue(QStringLiteral(":name"), device.name);
     query.bindValue(QStringLiteral(":host"), device.host);
@@ -560,6 +572,8 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
     query.bindValue(QStringLiteral(":topic"), device.mqttTopic);
     query.bindValue(QStringLiteral(":points"), pointsToJson(device.points));
     query.bindValue(QStringLiteral(":grp"), device.groupName());
+    query.bindValue(QStringLiteral(":user"), device.username);
+    query.bindValue(QStringLiteral(":pass"), device.password);
 
     if (!query.exec()) {
         m_lastError = query.lastError().text();
@@ -605,7 +619,8 @@ QList<DeviceInfo> DataStorage::loadDevices() const
 
     QSqlQuery query(m_db);
     if (!query.exec(QStringLiteral(
-            "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points, grp"
+            "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points, grp,"
+            " username, password"
             " FROM devices"))) {
         m_lastError = query.lastError().text();
         return result;
@@ -623,6 +638,8 @@ QList<DeviceInfo> DataStorage::loadDevices() const
         info.mqttTopic = query.value(7).toString();
         info.points = pointsFromJson(query.value(8).toString());
         info.group = query.value(9).toString(); // 老库补列后是 NULL → 空串 → 默认分组
+        info.username = query.value(10).toString(); // 同上：老库补列后为空 → 匿名接入
+        info.password = query.value(11).toString();
         result.append(info);
     }
     return result;
@@ -673,6 +690,50 @@ QList<DataStorage::DeviceStats> DataStorage::queryDeviceStats(const QDateTime &f
 
     result = byDevice.values();
     return result;
+}
+
+qint64 DataStorage::countSamples(const QDateTime &from, const QDateTime &to) const
+{
+    if (!m_db.isOpen())
+        return 0;
+
+    QSqlQuery query(m_db);
+    // 两个时间都无效才走全表 COUNT：只要用户给了区间就按区间算，
+    // 免得"忘了传参"静静地退化成全表扫描还看不出问题。
+    if (from.isValid() && to.isValid()) {
+        query.prepare(QStringLiteral("SELECT COUNT(*) FROM samples WHERE ts BETWEEN :from AND :to"));
+        query.bindValue(QStringLiteral(":from"), from);
+        query.bindValue(QStringLiteral(":to"), to);
+    } else {
+        query.prepare(QStringLiteral("SELECT COUNT(*) FROM samples"));
+    }
+
+    if (!query.exec() || !query.next()) {
+        m_lastError = query.lastError().text();
+        return 0;
+    }
+    return query.value(0).toLongLong();
+}
+
+int DataStorage::countAlarms(const QDateTime &from, const QDateTime &to) const
+{
+    if (!m_db.isOpen())
+        return 0;
+
+    QSqlQuery query(m_db);
+    if (from.isValid() && to.isValid()) {
+        query.prepare(QStringLiteral("SELECT COUNT(*) FROM alarms WHERE ts BETWEEN :from AND :to"));
+        query.bindValue(QStringLiteral(":from"), from);
+        query.bindValue(QStringLiteral(":to"), to);
+    } else {
+        query.prepare(QStringLiteral("SELECT COUNT(*) FROM alarms"));
+    }
+
+    if (!query.exec() || !query.next()) {
+        m_lastError = query.lastError().text();
+        return 0;
+    }
+    return query.value(0).toInt();
 }
 
 QString DataStorage::lastError() const

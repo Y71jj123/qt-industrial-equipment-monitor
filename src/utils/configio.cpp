@@ -60,6 +60,8 @@ QJsonObject deviceToJson(const DeviceInfo &device)
     object.insert(QStringLiteral("pollIntervalMs"), device.pollIntervalMs);
     object.insert(QStringLiteral("protocol"), int(device.protocol));
     object.insert(QStringLiteral("mqttTopic"), device.mqttTopic);
+    object.insert(QStringLiteral("username"), device.username);
+    object.insert(QStringLiteral("password"), device.password);
     object.insert(QStringLiteral("points"), pointsToJson(device.points));
     return object;
 }
@@ -76,6 +78,8 @@ DeviceInfo deviceFromJson(const QJsonObject &object)
     device.pollIntervalMs = object.value(QStringLiteral("pollIntervalMs")).toInt(1000);
     device.protocol = static_cast<DeviceProtocol>(object.value(QStringLiteral("protocol")).toInt(0));
     device.mqttTopic = object.value(QStringLiteral("mqttTopic")).toString();
+    device.username = object.value(QStringLiteral("username")).toString();
+    device.password = object.value(QStringLiteral("password")).toString();
     device.points = pointsFromJson(object.value(QStringLiteral("points")).toArray());
 
     // 采集周期 0 会把采集定时器变成忙循环，兜一个下限

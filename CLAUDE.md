@@ -49,7 +49,20 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
    但被多个面板共用的成员（如 `m_rightTabs`）**不能**放进 ifdef 里。
 4. **新增协议只改一处** —— `AcquisitionScheduler::createConnection()` 里的 switch。
    上层（界面 / 调度）不应感知协议差异。
-5. **改数据库结构**要写 `CREATE TABLE IF NOT EXISTS`，保证老库能平滑升级。
+5. **改数据库结构**要写 `CREATE TABLE IF NOT EXISTS`，并**同时补一次 `ensureColumn()`**
+   （老库不会因为 CREATE TABLE IF NOT EXISTS 而多出新列）。
+   现有补列：`devices.grp`、`devices.username`、`devices.password`。
+   在 `devices` 表上加字段的完整改动清单：
+   `devicemanager.h`(DeviceInfo) → `datastorage.cpp`(建表 + ensureColumn + saveDevice + loadDevices)
+   → `configio.cpp`(deviceToJson/deviceFromJson) → `devicedialog.cpp`(控件 + setDevice + device())。
+6. **MQTT 的 CONNACK 只能在 `onReadyRead` 里判** —— 建连后的数据会先经 `readyRead`
+   被 `onReadyRead` 收进 `m_buffer`；`open()` 里再 `socket->readAll()` 只会拿到空数组，
+   于是"账号密码错误（返回码 4）"会被当成连接成功。
+   现在由 `onReadyRead` 解析 CONNACK 并置位 `m_connAckReceived` / `m_connRejected`，
+   `open()` 只等标志位。**改动这块别退回"在 open 里读 socket"的写法。**
+7. **Windows 上 `SO_REUSEADDR` 允许两个进程绑同一端口** —— 本地起测试用 broker / 服务端桩时，
+   旧进程没退干净会"看起来绑定成功"，但连接被旧进程接走。重启前务必确认旧进程已终止
+   （用 `Get-CimInstance Win32_Process` 按命令行过滤，别一把 `taskkill /IM python.exe`）。
 
 ## 线程模型与性能约定
 
@@ -73,7 +86,12 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
 ## 界面现状
 
 - 全局样式集中在 `src/ui/theme.cpp` 的 `applicationStyleSheet()`，在 `main.cpp` 里 `setStyleSheet` 生效。
-- 主窗口右侧 9 个 Tab：实时数据 / 趋势曲线 / 告警 / 告警历史 / 历史查询 / 远程控制 / 规则配置 / 报表统计 / 设备详情。
+- 主窗口右侧 10 个 Tab：**总览** / 实时数据 / 趋势曲线 / 告警 / 告警历史 / 历史查询 / 远程控制 / 规则配置 / 报表统计 / 设备详情。
 - 各面板都是独立的 `QWidget` 子类，构造时注入它依赖的核心对象（不 new 全局单例）。
 - 「告警」= 当前活动告警（`AlarmEngine` 内存态），「告警历史」= 库里的历史（`DataStorage::queryAlarms`），两者别搞混。
 - 告警提醒（非模态浮层 / 声音 / 系统托盘）统一在 `ui/alarmnotifier.h`，自己订阅 `AlarmEngine::alarmRaised`，主窗口只接它的 `alarmActivated` 信号。
+- 「总览」= `ui/overviewpanel.*`：KPI 卡片墙 + 每设备状态卡，点卡片发 `deviceActivated`，由主窗口选中设备树节点并切到「实时数据」。
+  - 配色靠 objectName 切换（`kpiCard` / `kpiCardOk` / `kpiCardWarn` / `kpiCardDanger` + 对应的 `kpiValue*`），
+    语义色 token 是 `@success` / `@warning` / `@danger`；切换前先比 objectName，避免每 2 秒白跑一次 unpolish。
+  - 数据库统计只在**页面可见时**才跑（`showEvent` 开 / `hideEvent` 关定时器）；
+    实时值走 `tagUpdated`，攒 250ms 一批只更新对应卡片。
