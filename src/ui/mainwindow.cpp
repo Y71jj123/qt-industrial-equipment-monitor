@@ -179,7 +179,9 @@ QString MainWindow::keyOf(const QString &deviceId, const QString &tagId)
 
 void MainWindow::setupUi()
 {
-    setWindowTitle(QStringLiteral("工业设备远程监控管理平台  v%1").arg(QStringLiteral(APP_VERSION)));
+    // 标题只留名字：版本号对使用者没有信息量，挂在标题上只是噪音。
+    // 版本仍在 QApplication::setApplicationVersion() 与启动日志里，排查时查得到。
+    setWindowTitle(QStringLiteral("工业设备远程监控管理平台"));
     resize(1360, 820);
 
     QToolBar *toolBar = addToolBar(QStringLiteral("主工具栏"));
