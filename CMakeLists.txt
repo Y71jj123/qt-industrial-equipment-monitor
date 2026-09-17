@@ -41,6 +41,10 @@ else()
     message(STATUS "Qt Test      : NOT found (unit tests disabled)")
 endif()
 
+# 源码根目录：协议插件（plugins/）与性能夹具（tools/bench）都要用它做 include 路径。
+# 定义在顶层是为了让它们都能拿到，且不必各自去拼相对路径。
+set(MONITOR_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
 add_subdirectory(src)
 
 # ---------------------------------------------------------------------------
@@ -50,6 +54,16 @@ add_subdirectory(src)
 include(CTest)
 if(BUILD_TESTING AND Qt${QT_VERSION_MAJOR}Test_FOUND)
     add_subdirectory(tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# 性能基线夹具：默认关闭（-DMONITOR_BUILD_BENCH=ON 打开）。
+# 它只在"想复现 README 里的数字"时才需要，让 CI 每次构建都编它是纯浪费。
+# ---------------------------------------------------------------------------
+option(MONITOR_BUILD_BENCH "构建性能基线夹具 monitor_bench（默认关闭）" OFF)
+if(MONITOR_BUILD_BENCH)
+    message(STATUS "Bench        : enabled (monitor_bench)")
+    add_subdirectory(tools/bench)
 endif()
 
 # ---------------------------------------------------------------------------
