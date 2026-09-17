@@ -90,7 +90,9 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
 - 各面板都是独立的 `QWidget` 子类，构造时注入它依赖的核心对象（不 new 全局单例）。
 - 「告警」= 当前活动告警（`AlarmEngine` 内存态），「告警历史」= 库里的历史（`DataStorage::queryAlarms`），两者别搞混。
 - 告警提醒（非模态浮层 / 声音 / 系统托盘）统一在 `ui/alarmnotifier.h`，自己订阅 `AlarmEngine::alarmRaised`，主窗口只接它的 `alarmActivated` 信号。
-- 「总览」= `ui/overviewpanel.*`：KPI 卡片墙 + 每设备状态卡，点卡片发 `deviceActivated`，由主窗口选中设备树节点并切到「实时数据」。
+- 「总览」= `ui/overviewpanel.*`：KPI 卡片墙 + 每设备状态卡 + 当前活动告警列表（最多 6 条），
+  点设备卡发 `deviceActivated`，由主窗口选中设备树节点并切到「实时数据」。
+  - 告警明细列表只是"扫一眼"，处理告警仍在「告警」页；`activeAlarms()` 出来是无序的，面板里按时间倒序排。
   - 配色靠 objectName 切换（`kpiCard` / `kpiCardOk` / `kpiCardWarn` / `kpiCardDanger` + 对应的 `kpiValue*`），
     语义色 token 是 `@success` / `@warning` / `@danger`；切换前先比 objectName，避免每 2 秒白跑一次 unpolish。
   - 数据库统计只在**页面可见时**才跑（`showEvent` 开 / `hideEvent` 关定时器）；
