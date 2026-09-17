@@ -26,11 +26,28 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Sql Network)
 # Qt Charts is optional: the trend-chart page is not wired up yet.
 find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Charts QUIET)
 
+# Qt Test is optional too: 没有它只是不能跑单元测试，不影响出包。
+find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Test QUIET)
+
 message(STATUS "Qt version   : ${QT_VERSION_MAJOR} (${Qt${QT_VERSION_MAJOR}_VERSION})")
 if(Qt${QT_VERSION_MAJOR}Charts_FOUND)
     message(STATUS "Qt Charts    : found")
 else()
     message(STATUS "Qt Charts    : NOT found (trend chart page will be disabled)")
 endif()
+if(Qt${QT_VERSION_MAJOR}Test_FOUND)
+    message(STATUS "Qt Test      : found (unit tests enabled)")
+else()
+    message(STATUS "Qt Test      : NOT found (unit tests disabled)")
+endif()
 
 add_subdirectory(src)
+
+# ---------------------------------------------------------------------------
+# 单元测试：ctest 驱动。BUILD_TESTING 由 include(CTest) 提供（默认 ON），
+# 可用 -DBUILD_TESTING=OFF 关掉，出包时不必编译测试。
+# ---------------------------------------------------------------------------
+include(CTest)
+if(BUILD_TESTING AND Qt${QT_VERSION_MAJOR}Test_FOUND)
+    add_subdirectory(tests)
+endif()

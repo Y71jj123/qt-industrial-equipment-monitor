@@ -2,6 +2,7 @@
 
 > 基于 Qt/C++ 的工业设备远程监控管理平台 —— 实时数据采集、告警推送、远程控制。
 
+![CI](https://github.com/Y71jj123/qt-industrial-equipment-monitor/actions/workflows/build.yml/badge.svg)
 ![Qt](https://img.shields.io/badge/Qt-6.x-41CD52?logo=qt&logoColor=white)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
@@ -32,6 +33,7 @@
 - [x] 配置管理：**设备 / 分组 / 规则一键导出导入（JSON）**
 - [x] 界面主题：**浅色 / 深色双主题一键切换**，矢量图标，设置持久化
 - [x] **MQTT 接入鉴权**：设备可配置用户名 / 密码，CONNECT 报文带 User Name / Password 字段；broker 拒绝时按返回码给出明确原因（如"用户名或密码错误"）
+- [x] **单元测试 + CI**：`QTest` 覆盖告警状态机 / 工单闭环与 MTTR / 存储往返与溢出补传 / 配置往返，`ctest` 一行跑完；GitHub Actions 自动构建 + **零警告**门槛 + 跑测试
 
 > 全部核心功能已落地，并完成多轮升级：界面视觉 / 告警体验 / 线程化架构 / 功能增强 → 总览仪表盘 / MQTT 接入鉴权 → **告警工单闭环与 MTTR**。
 
@@ -108,7 +110,10 @@ qt-industrial-equipment-monitor/
 ├── ROADMAP.md              # 迭代计划（落点文件 + 验收标准 + 里程碑）
 ├── README.md
 ├── tools/                  # 零依赖本地模拟器（Modbus 从站 / MQTT 发布）
+├── tests/                  # 单元测试（QTest；链接 monitor_core —— 被测的就是产品跑的那份代码）
+├── .github/workflows/      # CI：构建 + 零警告门槛 + ctest
 └── src/
+    ├── CMakeLists.txt      # 产出两个目标：monitor_core（静态库，核心逻辑）+ 可执行文件（仅 main）
     ├── main.cpp            # 入口：全局主题 + 登录 + 组装
     ├── ui/                 # 界面层
     │   ├── theme.*             浅/深双主题 QSS + 矢量图标工厂
@@ -170,6 +175,21 @@ E:/Qt/6.11.2/mingw_64/bin/windeployqt.exe --no-translations \
 ```
 
 之后 `build-vscode/src/` 里会出现 `Qt6*.dll` + `platforms/` + `sqldrivers/`，双击 exe 就能跑。
+
+**跑单元测试**
+
+核心逻辑（告警引擎、存储、配置、协议组包）有 QTest 覆盖，一条命令跑完：
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+当前三个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR 分级）、
+`tst_datastorage`（告警落库与 NULL 语义 / 统计口径 / 采样溢出队列与补传顺序）、
+`tst_configio`（点位表与整份配置往返，含 MQTT 账号）。
+
+> 测试链接的是 `monitor_core` 静态库 —— 也就是主程序实际用的那份代码，
+> 不是把源码再编译一遍的"影子实现"。CI 里还会把编译警告视为失败。
 
 **默认账号**（演示用，见 `src/ui/logindialog.cpp`）
 
@@ -242,7 +262,7 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 - [x] v0.5 体验升级：双主题视觉、告警通知体系、采集线程化、曲线交互、配置导入导出、Excel 报表
 - [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
 - [ ] v0.7 业务闭环：告警工单与 MTTR（✅ 已完成）、断线补传与数据不丢（✅ 已完成）、Modbus 块读 + 串口 RTU
-- [ ] v0.8 技术深度：协议插件化、单元测试 + CI、性能基线报告
+- [ ] v0.8 技术深度：协议插件化、单元测试 + CI（✅ 已完成）、性能基线报告
 - [ ] v1.0 产品化：安装包、界面截图、日志滚动与崩溃转储
 
 ## 许可

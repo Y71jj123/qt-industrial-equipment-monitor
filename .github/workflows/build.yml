@@ -1,0 +1,62 @@
+name: build-and-test
+
+# 每次推送与 PR 都跑一遍：构建 + 零警告检查 + 单元测试。
+# 目的很直接 —— 让"能不能编译、测试过不过"这件事不依赖开发者在本地记得跑。
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: 构建 + 单元测试（零警告）
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.3'
+          modules: 'qtcharts'
+          cache: true
+
+      # Qt Widgets 在 Linux 上要链接 GL；Ninja 用来对齐本地构建方式
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev ninja-build
+
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: 构建
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 2>&1 | tee build.log
+
+      # 项目基线是 -Wall -Wextra 零警告，所以这里把它变成 CI 的硬门槛。
+      # 单独一步而不是加 -Werror：不同编译器/版本新增的警告会让构建直接挂掉，
+      # 那会掩盖真正的编译错误。先把警告显式打出来，再判定失败。
+      - name: 零警告检查
+        run: |
+          if grep -E "warning:" build.log; then
+            echo "::error::构建出现警告 —— 本项目要求 -Wall -Wextra 零警告。"
+            exit 1
+          fi
+          echo "零警告 ✅"
+
+      - name: 单元测试
+        run: ctest --test-dir build --output-on-failure
+
+      - name: 上传构建日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
