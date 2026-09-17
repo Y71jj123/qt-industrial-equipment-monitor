@@ -25,8 +25,14 @@ private slots:
     void setRangeWeek();
     void setRangeMonth();
 
+    /// 把当前时间范围的统计结果导出成 Excel（SpreadsheetML 2003，零第三方依赖）。
+    void onExportExcel();
+
 private:
     void setupUi();
+
+    /// 设备名（找不到时回落到 id）—— 报表里给人看的必须是名字。
+    QString deviceName(const QString &deviceId) const;
 
     DataStorage *m_storage = nullptr;
     DeviceManager *m_manager = nullptr;

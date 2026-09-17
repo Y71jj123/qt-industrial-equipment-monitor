@@ -11,8 +11,8 @@ class QLabel;
 class QTableWidget;
 
 #ifdef HAVE_QT_CHARTS
+class AdvancedChartView;
 class QChart;
-class QChartView;
 class QDateTimeAxis;
 class QLineSeries;
 class QValueAxis;
@@ -55,7 +55,7 @@ private:
 
 #ifdef HAVE_QT_CHARTS
     QChart *m_chart = nullptr;
-    QChartView *m_chartView = nullptr;
+    AdvancedChartView *m_chartView = nullptr;
     QDateTimeAxis *m_axisX = nullptr;
     QValueAxis *m_axisY = nullptr;
     QLineSeries *m_series = nullptr;

@@ -1,5 +1,6 @@
 #include "storage/datastorage.h"
 
+#include "utils/configio.h"
 #include "utils/logger.h"
 
 #include <QDir>
@@ -12,6 +13,7 @@
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QTimer>
 #include <QVariant>
 
 namespace {
@@ -27,50 +29,19 @@ QString defaultDatabasePath()
     return QDir(dir).filePath(QStringLiteral("monitor.db"));
 }
 
-/// 点位表 → JSON（存进 devices.points 列）。
+/// 点位表 → 紧凑 JSON，存进 devices.points 列。
+/// 点位表的 JSON 结构定义在 ConfigIo 里，和导出的配置文件共用同一份。
 QString pointsToJson(const QList<TagPoint> &points)
 {
-    QJsonArray array;
-    for (const TagPoint &point : points) {
-        QJsonObject object;
-        object.insert(QStringLiteral("id"), point.id);
-        object.insert(QStringLiteral("name"), point.name);
-        object.insert(QStringLiteral("unit"), point.unit);
-        object.insert(QStringLiteral("address"), point.address);
-        object.insert(QStringLiteral("registerType"), point.registerType);
-        object.insert(QStringLiteral("scale"), point.scale);
-        object.insert(QStringLiteral("boolean"), point.boolean);
-        array.append(object);
-    }
-    return QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    return QString::fromUtf8(
+        QJsonDocument(ConfigIo::pointsToJson(points)).toJson(QJsonDocument::Compact));
 }
 
-/// JSON → 点位表。
+/// 数据库列里的 JSON → 点位表。
 QList<TagPoint> pointsFromJson(const QString &text)
 {
-    QList<TagPoint> points;
     const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8());
-    if (!doc.isArray())
-        return points;
-
-    const QJsonArray array = doc.array();
-    for (const QJsonValue &value : array) {
-        const QJsonObject object = value.toObject();
-
-        TagPoint point;
-        point.id = object.value(QStringLiteral("id")).toString();
-        if (point.id.isEmpty())
-            continue;
-        point.name = object.value(QStringLiteral("name")).toString();
-        point.unit = object.value(QStringLiteral("unit")).toString();
-        point.address = object.value(QStringLiteral("address")).toInt();
-        point.registerType = object.value(QStringLiteral("registerType")).toInt(3);
-        point.scale = object.value(QStringLiteral("scale")).toDouble(1.0);
-        point.boolean = object.value(QStringLiteral("boolean")).toBool();
-
-        points.append(point);
-    }
-    return points;
+    return doc.isArray() ? ConfigIo::pointsFromJson(doc.array()) : QList<TagPoint>{};
 }
 
 } // namespace
@@ -112,12 +83,26 @@ bool DataStorage::open()
         return false;
     }
 
+    // 攒批提交的定时器：住在本对象所在线程（GUI），SQLite 连接不跨线程
+    if (!m_flushTimer) {
+        m_flushTimer = new QTimer(this);
+        m_flushTimer->setInterval(kSampleFlushIntervalMs);
+        connect(m_flushTimer, &QTimer::timeout, this, &DataStorage::flush);
+    }
+    m_flushTimer->start();
+
     Log::info(QStringLiteral("历史数据库已就绪: %1").arg(m_databasePath));
     return true;
 }
 
 void DataStorage::close()
 {
+    if (m_flushTimer)
+        m_flushTimer->stop();
+
+    // 关库前先落盘，否则队列里那几条就跟着进程一起没了
+    flush();
+
     if (m_db.isOpen())
         m_db.close();
 }
@@ -171,7 +156,8 @@ bool DataStorage::createTables()
                        "  protocol   INTEGER,"
                        "  poll_ms    INTEGER,"
                        "  mqtt_topic TEXT,"
-                       "  points     TEXT"
+                       "  points     TEXT,"
+                       "  grp        TEXT"
                        ")"),
     };
 
@@ -183,10 +169,42 @@ bool DataStorage::createTables()
         }
     }
 
+    // 老库里的 devices 表没有 grp 列，靠补列升级 —— 不重建表，设备配置原样保留。
+    // 补出来的列是 NULL，DeviceInfo::groupName() 会把它当默认分组。
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("grp"), QStringLiteral("TEXT")))
+        return false;
+
     query.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_samples_lookup ON samples(device, tag, ts)"));
     query.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_alarms_lookup ON alarms(device, tag, ts)"));
+    return true;
+}
+
+bool DataStorage::ensureColumn(const QString &table, const QString &column, const QString &definition)
+{
+    // 先问 PRAGMA 有没有这一列：直接 ALTER TABLE 会在列已存在时报错，
+    // 每次启动都往日志里甩一条 "duplicate column name" 纯属噪音。
+    QSqlQuery probe(m_db);
+    if (!probe.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) {
+        m_lastError = probe.lastError().text();
+        return false;
+    }
+
+    while (probe.next()) {
+        if (probe.value(1).toString().compare(column, Qt::CaseInsensitive) == 0)
+            return true;
+    }
+
+    QSqlQuery alter(m_db);
+    if (!alter.exec(QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
+                        .arg(table, column, definition))) {
+        m_lastError = alter.lastError().text();
+        Log::error(QStringLiteral("为表 %1 补列 %2 失败: %3").arg(table, column, m_lastError));
+        return false;
+    }
+
+    Log::info(QStringLiteral("数据库升级：表 %1 新增列 %2").arg(table, column));
     return true;
 }
 
@@ -202,19 +220,76 @@ bool DataStorage::insertSample(const QString &deviceId,
         return false;
     }
 
+    // 只入队：真正的 INSERT 交给 flush() 一次性事务提交。
+    // 时间戳在这里就定下来，免得排队 200ms 后采样时刻全被"拉平"。
+    PendingSample sample;
+    sample.time = time.isValid() ? time : QDateTime::currentDateTime();
+    sample.deviceId = deviceId;
+    sample.tagId = tagId;
+    sample.value = value;
+    m_pendingSamples.append(sample);
+
+    // 高频采集时不等定时器，攒够一批立刻走 —— 否则队列会被采样速度甩开
+    if (m_pendingSamples.size() >= kSampleBatchSize)
+        flush();
+
+    return true;
+}
+
+void DataStorage::flush()
+{
+    if (m_pendingSamples.isEmpty())
+        return;
+
+    if (!m_db.isOpen()) {
+        // 库没打开，攒着只会无限增长；丢弃并说明丢了多少
+        Log::warn(QStringLiteral("数据库未打开，丢弃 %1 条未落库的采样数据")
+                      .arg(m_pendingSamples.size()));
+        m_pendingSamples.clear();
+        return;
+    }
+
+    const QList<PendingSample> batch = m_pendingSamples;
+    m_pendingSamples.clear();
+
+    // 一个事务装一整批：SQLite 默认每条 INSERT 单独提交（各自一次 fsync），
+    // 合并后几百条数据只落一次盘 —— 这才是批量写入真正的收益所在。
+    if (!m_db.transaction()) {
+        m_lastError = m_db.lastError().text();
+        Log::warn(QStringLiteral("采样数据批量写入失败（事务开启失败）: %1").arg(m_lastError));
+        return;
+    }
+
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "INSERT INTO samples (ts, device, tag, value) VALUES (:ts, :device, :tag, :value)"));
-    query.bindValue(QStringLiteral(":ts"), (time.isValid() ? time : QDateTime::currentDateTime()));
-    query.bindValue(QStringLiteral(":device"), deviceId);
-    query.bindValue(QStringLiteral(":tag"), tagId);
-    query.bindValue(QStringLiteral(":value"), value);
 
-    if (!query.exec()) {
-        m_lastError = query.lastError().text();
-        return false;
+    bool ok = true;
+    for (const PendingSample &sample : batch) {
+        query.bindValue(QStringLiteral(":ts"), sample.time);
+        query.bindValue(QStringLiteral(":device"), sample.deviceId);
+        query.bindValue(QStringLiteral(":tag"), sample.tagId);
+        query.bindValue(QStringLiteral(":value"), sample.value);
+
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            ok = false;
+            break;
+        }
     }
-    return true;
+
+    if (ok && !m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        ok = false;
+    }
+
+    if (!ok) {
+        m_db.rollback();
+        // 本批整批回滚并丢弃：采样是持续流，卡住的数据比丢掉的数据更麻烦
+        Log::warn(QStringLiteral("采样数据批量写入失败，本批 %1 条已丢弃: %2")
+                      .arg(batch.size())
+                      .arg(m_lastError));
+    }
 }
 
 QList<DataStorage::Sample> DataStorage::querySamples(const QString &deviceId,
@@ -472,8 +547,9 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
 
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
-        "REPLACE INTO devices (id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points)"
-        " VALUES (:id, :name, :host, :port, :slave, :protocol, :poll, :topic, :points)"));
+        "REPLACE INTO devices (id, name, host, port, slave, protocol, poll_ms, mqtt_topic,"
+        " points, grp)"
+        " VALUES (:id, :name, :host, :port, :slave, :protocol, :poll, :topic, :points, :grp)"));
     query.bindValue(QStringLiteral(":id"), device.id);
     query.bindValue(QStringLiteral(":name"), device.name);
     query.bindValue(QStringLiteral(":host"), device.host);
@@ -483,8 +559,22 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
     query.bindValue(QStringLiteral(":poll"), device.pollIntervalMs);
     query.bindValue(QStringLiteral(":topic"), device.mqttTopic);
     query.bindValue(QStringLiteral(":points"), pointsToJson(device.points));
+    query.bindValue(QStringLiteral(":grp"), device.groupName());
 
     if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool DataStorage::clearDevices()
+{
+    if (!m_db.isOpen())
+        return false;
+
+    QSqlQuery query(m_db);
+    if (!query.exec(QStringLiteral("DELETE FROM devices"))) {
         m_lastError = query.lastError().text();
         return false;
     }
@@ -515,7 +605,8 @@ QList<DeviceInfo> DataStorage::loadDevices() const
 
     QSqlQuery query(m_db);
     if (!query.exec(QStringLiteral(
-            "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points FROM devices"))) {
+            "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points, grp"
+            " FROM devices"))) {
         m_lastError = query.lastError().text();
         return result;
     }
@@ -531,6 +622,7 @@ QList<DeviceInfo> DataStorage::loadDevices() const
         info.pollIntervalMs = query.value(6).toInt();
         info.mqttTopic = query.value(7).toString();
         info.points = pointsFromJson(query.value(8).toString());
+        info.group = query.value(9).toString(); // 老库补列后是 NULL → 空串 → 默认分组
         result.append(info);
     }
     return result;

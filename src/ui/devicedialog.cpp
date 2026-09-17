@@ -29,6 +29,14 @@ void DeviceDialog::setupUi()
     m_nameEdit = new QLineEdit(this);
     m_nameEdit->setPlaceholderText(QStringLiteral("例如：1 号空压机"));
 
+    // 可编辑分组下拉：既能选已有分组，也能直接敲一个新组名。
+    m_groupBox = new QComboBox(this);
+    m_groupBox->setEditable(true);
+    m_groupBox->setInsertPolicy(QComboBox::NoInsert);
+    m_groupBox->addItem(defaultGroupName());
+    if (auto *edit = m_groupBox->lineEdit())
+        edit->setPlaceholderText(QStringLiteral("可直接输入新分组名"));
+
     m_protocolBox = new QComboBox(this);
     m_protocolBox->addItem(protocolName(DeviceProtocol::Mock), int(DeviceProtocol::Mock));
     m_protocolBox->addItem(protocolName(DeviceProtocol::ModbusTcp), int(DeviceProtocol::ModbusTcp));
@@ -57,6 +65,7 @@ void DeviceDialog::setupUi()
     m_topicLabel = new QLabel(QStringLiteral("订阅主题"), this);
 
     form->addRow(QStringLiteral("设备名称"), m_nameEdit);
+    form->addRow(QStringLiteral("所属分组"), m_groupBox);
     form->addRow(QStringLiteral("通信协议"), m_protocolBox);
     form->addRow(QStringLiteral("地址 / 主机"), m_hostEdit);
     form->addRow(QStringLiteral("端口"), m_portSpin);
@@ -171,11 +180,31 @@ QList<TagPoint> DeviceDialog::collectPoints() const
     return points;
 }
 
+void DeviceDialog::setGroups(const QStringList &groups)
+{
+    const QString current = m_groupBox->currentText();
+
+    m_groupBox->clear();
+    for (const QString &group : groups) {
+        if (!group.trimmed().isEmpty())
+            m_groupBox->addItem(group);
+    }
+    if (m_groupBox->count() == 0)
+        m_groupBox->addItem(defaultGroupName());
+
+    // 优先恢复原来选中的分组，否则落在第一项。
+    if (!current.trimmed().isEmpty())
+        m_groupBox->setCurrentText(current);
+    else
+        m_groupBox->setCurrentIndex(0);
+}
+
 void DeviceDialog::setDevice(const DeviceInfo &device)
 {
     m_device = device;
 
     m_nameEdit->setText(device.name);
+    m_groupBox->setCurrentText(device.groupName());
 
     const int protocolIndex = m_protocolBox->findData(int(device.protocol));
     if (protocolIndex >= 0)
@@ -198,6 +227,9 @@ DeviceInfo DeviceDialog::device() const
     DeviceInfo info = m_device; // 保留原 id（编辑模式）
 
     info.name = m_nameEdit->text().trimmed();
+    info.group = m_groupBox->currentText().trimmed();
+    if (info.group.isEmpty())
+        info.group = defaultGroupName();
     info.protocol = static_cast<DeviceProtocol>(m_protocolBox->currentData().toInt());
     info.host = m_hostEdit->text().trimmed();
     info.port = static_cast<quint16>(m_portSpin->value());

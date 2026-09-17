@@ -9,6 +9,8 @@
 #include <QSqlDatabase>
 #include <QString>
 
+class QTimer;
+
 /// 历史数据存储层（SQLite）。
 ///
 /// 只负责"把数据存下来、按条件查回来"，不含业务判断。
@@ -18,6 +20,13 @@
 ///   - `operations` 操作留痕（远程下发、配置变更）
 ///   - `devices`    设备台账（配置持久化）
 /// 服务端部署时把 QSQLITE 换成 QMYSQL 即可，接口不变。
+///
+/// **写放大控制**：采样点先进内存队列，攒够 kSampleBatchSize 条或每
+/// kSampleFlushIntervalMs 由定时器触发一次，用**一个事务**批量 INSERT。
+/// 高频采集下把 N 次磁盘同步压成 1 次，这是量级上的差别。
+///
+/// **线程约束**：SQLite 连接不能跨线程共用 —— 队列提交始终由本对象所在线程
+/// （GUI 线程）的定时器驱动，工作线程只负责把数据通过信号抛过来。
 class DataStorage : public QObject
 {
     Q_OBJECT
@@ -62,11 +71,23 @@ public:
 
     // ---------------- 采样 ----------------
 
-    /// 写入一条采样记录；失败时返回 false，错误信息见 lastError()。
+    /// 攒够这么多条就立刻提交，不等定时器（高频采集时才走这条路）。
+    static constexpr int kSampleBatchSize = 200;
+
+    /// 提交间隔（毫秒）：低频采集时靠它保证数据不会在内存里久留。
+    static constexpr int kSampleFlushIntervalMs = 200;
+
+    /// 写入一条采样记录。**只入内存队列，不立即落库** ——
+    /// 返回值表示"已入队"，真正的落库结果是异步的（失败会记日志）。
+    /// 数据库未打开时返回 false。
     bool insertSample(const QString &deviceId,
                       const QString &tagId,
                       double value,
                       const QDateTime &time = QDateTime());
+
+    /// 立即把队列里的数据事务提交落库（队列为空时什么都不做）。
+    /// 退出前必须在 aboutToQuit 里调用，否则最后一批数据会丢。
+    void flush();
 
     /// 按设备 + 点位 + 时间区间查询历史数据（按时间升序）。
     QList<Sample> querySamples(const QString &deviceId,
@@ -109,6 +130,9 @@ public:
     bool removeDevice(const QString &id);
     QList<DeviceInfo> loadDevices() const;
 
+    /// 清空设备台账（配置导入时整体替换用）。历史采样 / 告警记录不受影响。
+    bool clearDevices();
+
     // ---------------- 统计 ----------------
 
     QList<DeviceStats> queryDeviceStats(const QDateTime &from, const QDateTime &to) const;
@@ -117,6 +141,23 @@ public:
 
 private:
     bool createTables();
+
+    /// 给老库补列（CREATE TABLE IF NOT EXISTS 不会修改已存在的表）。
+    /// 列已存在时静默返回 true —— 每次启动都会走一遍，不能刷错误日志。
+    bool ensureColumn(const QString &table, const QString &column, const QString &definition);
+
+    /// 待落库的采样点。
+    struct PendingSample
+    {
+        QDateTime time;
+        QString deviceId;
+        QString tagId;
+        double value = 0.0;
+    };
+
+    /// 队列 + 定时器都只在 GUI 线程碰，不需要加锁。
+    QList<PendingSample> m_pendingSamples;
+    QTimer *m_flushTimer = nullptr;
 
     QString m_databasePath;
     QSqlDatabase m_db;

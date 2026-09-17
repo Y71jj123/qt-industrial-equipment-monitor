@@ -42,6 +42,10 @@ struct TagPoint
     QString displayName() const { return name.isEmpty() ? id : name; }
 };
 
+/// 默认分组名。空 group 一律视为"默认分组" ——
+/// 老版本留下的设备记录没有分组字段，不给它们编造一个名字，统一落这里最省事。
+QString defaultGroupName();
+
 /// 单台设备的配置信息。
 struct DeviceInfo
 {
@@ -57,6 +61,10 @@ struct DeviceInfo
     DeviceProtocol protocol = DeviceProtocol::Mock; ///< 通信协议类型
     QString mqttTopic;             ///< MQTT 订阅主题（protocol == Mqtt 时使用）
     QList<TagPoint> points;        ///< 点位表（为空时按 defaultTagPoints() 处理）
+    QString group;                 ///< 所属分组（空 = 默认分组）
+
+    /// 所属分组名，永不为空 —— 界面直接拿它显示，不必到处判空。
+    QString groupName() const { return group.isEmpty() ? defaultGroupName() : group; }
 
     /// 三态视图：离线 / 在线 / 故障。
     DeviceState state() const
@@ -109,6 +117,34 @@ public:
 
     void clear();
 
+    // ---------------- 分组 ----------------
+
+    /// 全部分组名，**默认分组恒排第一**，其余按创建顺序。
+    ///
+    /// 分组是设备的属性，但"空分组"（里面一台设备都没有）也得留住 ——
+    /// 否则用户刚建好的组会因为还没往里放设备而消失，所以列表单独维护。
+    QStringList groups() const;
+
+    /// 整体替换分组列表（配置导入时用）。默认分组会被自动补上。
+    /// 列表里没有的分组下的设备，一律回落到默认分组。
+    void setGroups(const QStringList &groups);
+
+    /// 新建分组；已存在或名字为空则返回 false。
+    bool addGroup(const QString &name);
+
+    /// 重命名分组；组内设备跟着走，改名失败（重名 / 改默认分组）返回 false。
+    bool renameGroup(const QString &oldName, const QString &newName);
+
+    /// 删除分组：**组内设备回落到默认分组，一台都不会丢**。
+    /// 默认分组不可删除。
+    bool removeGroup(const QString &name);
+
+    /// 把设备移到指定分组（分组不存在会自动创建）。
+    bool setDeviceGroup(const QString &deviceId, const QString &group);
+
+    /// 分组名规范化：去空白，空值取默认分组。
+    static QString normalizeGroup(const QString &name);
+
 signals:
     void deviceAdded(const DeviceInfo &device);
     void deviceRemoved(const QString &id);
@@ -116,10 +152,17 @@ signals:
     void onlineChanged(const QString &id, bool online);
     void faultChanged(const QString &id, bool fault);
 
+    /// 分组列表本身发生变化（新增 / 重命名 / 删除）。设备归组变化走 deviceUpdated。
+    void groupsChanged();
+
 private:
     int indexOf(const QString &id) const;
 
+    /// 确保分组名在列表里（不动设备的归组）。
+    void ensureGroup(const QString &name);
+
     QList<DeviceInfo> m_devices;
+    QStringList m_groups; ///< 恒含 defaultGroupName()，且排在第一位
 };
 
 Q_DECLARE_METATYPE(TagPoint)

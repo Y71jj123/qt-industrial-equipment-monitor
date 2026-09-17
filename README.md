@@ -15,17 +15,21 @@
 
 ## 核心功能
 
-- [x] 设备接入管理：增删改设备，配置 IP/端口/从站地址，断线自动重连（指数退避）
-- [x] 设备状态总览：在线 / 离线 / 故障三态 + 状态灯
-- [x] 实时数据采集：按采集周期轮询数据点，表格实时刷新
-- [x] 实时/历史曲线：基于 `Qt Charts` 的实时滚动趋势 + 历史区间查询曲线
+- [x] 设备接入管理：增删改设备，配置 IP/端口/从站地址，**支持分组**，断线自动重连（指数退避 1s→30s）
+- [x] 设备状态总览：在线 / 离线 / 故障三态 + 状态灯，左侧分组树
+- [x] 实时数据采集：按采集周期轮询数据点，表格实时刷新（UI 侧 100ms 节流），**每台设备独立采集线程**
+- [x] 实时/历史曲线：基于 `Qt Charts`，实时滚动 + 历史区间查询，**滚轮缩放 / 拖拽平移 / 悬停十字准星读数**
 - [x] 告警引擎：阈值 / 变化率 / 离线三类告警，自动分级 + 告警列表，支持确认与消警
+- [x] 告警体验：**系统托盘通知 + 浮动告警 Toast + 声音提示**，分级自动消隐、严重告警常驻
+- [x] 告警历史：**独立的告警历史查询面板**（时间范围 + 等级 + 设备筛选，支持导出）
 - [x] 远程控制：指令下发 + 二次确认 + 操作留痕（落库可查）
-- [x] 历史数据：SQLite 本地存储，按时间/设备/点位查询，导出 CSV
+- [x] 历史数据：SQLite 本地存储（**批量事务写入**），按时间/设备/点位查询，导出 CSV
 - [x] 用户与权限：登录、角色分级（操作员 / 管理员）
-- [x] 报表与统计：设备运行时长、采样点数、告警次数统计
+- [x] 报表与统计：设备运行时长、采样点数、告警次数统计，**导出 Excel（.xls）**
+- [x] 配置管理：**设备 / 分组 / 规则一键导出导入（JSON）**
+- [x] 界面主题：**浅色 / 深色双主题一键切换**，矢量图标，设置持久化
 
-> 全部核心功能已落地。可选增强：告警弹窗 / 声音提示、采集线程化（`QThread` 解耦）、MQTT 账号鉴权。
+> 全部核心功能已落地并完成一轮体验升级（界面视觉 / 告警体验 / 线程化架构 / 功能增强）。
 
 ## 技术栈
 
@@ -88,7 +92,7 @@ flowchart LR
 
 设计要点：通信层按协议抽象成统一接口（点位读 / 写 / 连接管理），**新增协议只改 `AcquisitionScheduler::createConnection()` 里一个 switch，上层零改动**；采集到的数据一律经信号槽投递给界面，界面不直接碰通信对象。
 
-> 关于线程：当前采集运行在 GUI 线程（阻塞式收发、超时给得短）。若要接入大量设备，把 `DeviceConnection` 移到 `QThread` 即可，接口无需改动。
+> 关于线程：采集已**线程化**——每台设备一个 `QThread` 工作线程，`DeviceConnection` 对象 `moveToThread` 到该线程，读写通过 `QMetaObject::invokeMethod` 跨线程调用；采样数据经队列 + 定时批量事务写入 SQLite（200ms / 200 行），避免高频小事务拖慢界面。
 
 ## 目录结构
 
@@ -96,28 +100,33 @@ flowchart LR
 qt-industrial-equipment-monitor/
 ├── CMakeLists.txt          # 顶层构建配置
 ├── CMakePresets.json       # VS Code / CLI 构建预设
+├── CLAUDE.md               # AI 编码助手项目上下文（约定 + 已知坑）
 ├── README.md
+├── tools/                  # 零依赖本地模拟器（Modbus 从站 / MQTT 发布）
 └── src/
     ├── main.cpp            # 入口：全局主题 + 登录 + 组装
     ├── ui/                 # 界面层
-    │   ├── theme.*             工业风 QSS 主题
+    │   ├── theme.*             浅/深双主题 QSS + 矢量图标工厂
     │   ├── logindialog.*       登录 / 角色
-    │   ├── mainwindow.*        主窗口（组装各面板 + 权限控制）
+    │   ├── mainwindow.*        主窗口（分组设备树 + 9 个功能页 + 权限控制）
     │   ├── alarmpanel.*        告警面板（列表 / 确认 / 消警）
-    │   ├── devicedialog.*      设备配置对话框
+    │   ├── alarmnotifier.*     告警通知（托盘 / 浮动 Toast / 声音）
+    │   ├── alarmhistorypanel.* 告警历史独立查询面板
+    │   ├── advancedchartview.* 趋势曲线增强视图（缩放 / 平移 / 准星）
+    │   ├── devicedialog.*      设备配置对话框（含分组）
     │   ├── devicedetailpanel.* 设备详情
     │   ├── historypanel.*      历史查询（表格 + 曲线 + CSV）
     │   ├── rulepanel.*         告警规则配置
     │   ├── controlpanel.*      远程控制 + 操作留痕
-    │   └── reportpanel.*       报表统计
+    │   └── reportpanel.*       报表统计 + Excel 导出
     ├── comm/               # 通信层
     │   ├── deviceconnection.h  协议抽象接口（含 configure 入口）
     │   ├── mockconnection.*    模拟数据源
     │   ├── modbusconnection.*  Modbus TCP（手写 MBAP / PDU）
     │   └── mqttconnection.*    MQTT 3.1.1（手写最小子集）
-    ├── core/               # 设备模型、采集调度（含自动重连）、告警引擎
-    ├── storage/            # SQLite：采样 / 告警 / 操作 / 设备台账
-    └── utils/              # 日志
+    ├── core/               # 设备模型、采集调度（线程化 + 自动重连）、告警引擎
+    ├── storage/            # SQLite：采样 / 告警 / 操作 / 设备台账（批量写入）
+    └── utils/              # 日志（线程安全）、配置导入导出、Excel 导出
 ```
 
 ## 构建与运行
@@ -215,6 +224,7 @@ python tools/mqtt_publisher_sim.py --host broker.emqx.io --topic factory/line1
 - [x] v0.2 告警引擎 + 历史曲线
 - [x] v0.3 远程控制 + 用户权限
 - [x] v0.4 报表导出与运维统计
+- [x] v0.5 体验升级：双主题视觉、告警通知体系、采集线程化、曲线交互、配置导入导出、Excel 报表
 
 ## 许可
 
