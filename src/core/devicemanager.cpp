@@ -91,6 +91,19 @@ void DeviceManager::setOnline(const QString &id, bool online)
     emit onlineChanged(id, online);
 }
 
+void DeviceManager::setFault(const QString &id, bool fault)
+{
+    const int idx = indexOf(id);
+    if (idx < 0)
+        return;
+
+    if (m_devices.at(idx).fault == fault)
+        return;
+
+    m_devices[idx].fault = fault;
+    emit faultChanged(id, fault);
+}
+
 void DeviceManager::clear()
 {
     const QList<DeviceInfo> old = m_devices;
@@ -98,4 +111,65 @@ void DeviceManager::clear()
         emit deviceRemoved(item.id);
 
     m_devices.clear();
+}
+
+QString deviceStateName(DeviceState state)
+{
+    switch (state) {
+    case DeviceState::Online:
+        return QStringLiteral("在线");
+    case DeviceState::Fault:
+        return QStringLiteral("故障");
+    case DeviceState::Offline:
+        break;
+    }
+    return QStringLiteral("离线");
+}
+
+QString protocolName(DeviceProtocol protocol)
+{
+    switch (protocol) {
+    case DeviceProtocol::ModbusTcp:
+        return QStringLiteral("Modbus TCP");
+    case DeviceProtocol::Mqtt:
+        return QStringLiteral("MQTT");
+    case DeviceProtocol::Mock:
+        break;
+    }
+    return QStringLiteral("模拟设备");
+}
+
+quint16 defaultPortForProtocol(DeviceProtocol protocol)
+{
+    switch (protocol) {
+    case DeviceProtocol::ModbusTcp:
+        return 502;
+    case DeviceProtocol::Mqtt:
+        return 1883;
+    case DeviceProtocol::Mock:
+        break;
+    }
+    return 502;
+}
+
+QList<TagPoint> defaultTagPoints()
+{
+    // 与 MockConnection 的内置数据源、以及默认告警规则保持一致
+    // （温度上限 60 / 压力上限 80 / 转速上限 90 / 振动上限 70）。
+    return {
+        TagPoint{QStringLiteral("temperature"), QStringLiteral("温度"), QStringLiteral("℃"), 0, 3, 1.0, false},
+        TagPoint{QStringLiteral("pressure"), QStringLiteral("压力"), QStringLiteral("kPa"), 1, 3, 1.0, false},
+        TagPoint{QStringLiteral("speed"), QStringLiteral("转速"), QStringLiteral("r/min"), 2, 3, 1.0, false},
+        TagPoint{QStringLiteral("running"), QStringLiteral("运行状态"), QString(), 3, 1, 1.0, true},
+        TagPoint{QStringLiteral("vibration"), QStringLiteral("振动"), QStringLiteral("mm/s"), 4, 3, 1.0, false},
+    };
+}
+
+const TagPoint *findTagPoint(const QList<TagPoint> &points, const QString &id)
+{
+    for (const TagPoint &point : points) {
+        if (point.id == id)
+            return &point;
+    }
+    return nullptr;
 }

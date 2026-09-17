@@ -2,13 +2,35 @@ set(PROJECT_SOURCES
     main.cpp
 
     # UI layer
+    ui/theme.h
+    ui/theme.cpp
     ui/mainwindow.h
     ui/mainwindow.cpp
+    ui/alarmpanel.h
+    ui/alarmpanel.cpp
+    ui/devicedetailpanel.h
+    ui/devicedetailpanel.cpp
+    ui/devicedialog.h
+    ui/devicedialog.cpp
+    ui/historypanel.h
+    ui/historypanel.cpp
+    ui/rulepanel.h
+    ui/rulepanel.cpp
+    ui/controlpanel.h
+    ui/controlpanel.cpp
+    ui/reportpanel.h
+    ui/reportpanel.cpp
+    ui/logindialog.h
+    ui/logindialog.cpp
 
     # Communication layer (protocol abstraction)
     comm/deviceconnection.h
     comm/mockconnection.h
     comm/mockconnection.cpp
+    comm/modbusconnection.h
+    comm/modbusconnection.cpp
+    comm/mqttconnection.h
+    comm/mqttconnection.cpp
 
     # Core layer
     core/devicemanager.h

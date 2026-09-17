@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QStringList>
 
+struct DeviceInfo;
 class QTimer;
 
 /// 模拟设备连接。
@@ -19,6 +20,8 @@ class MockConnection : public DeviceConnection
 public:
     explicit MockConnection(QObject *parent = nullptr);
     ~MockConnection() override;
+
+    void configure(const DeviceInfo &device) override;
 
     bool open(const QString &host, quint16 port) override;
     void close() override;
