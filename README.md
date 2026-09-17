@@ -177,6 +177,32 @@ E:/Qt/6.11.2/mingw_64/bin/windeployqt.exe --no-translations \
 
 之后 `build-vscode/src/` 里会出现 `Qt6*.dll` + `platforms/` + `sqldrivers/`，双击 exe 就能跑。
 
+**打成可发布的安装包（CPack）**
+
+```bash
+# 装到一个目录，看一下产物结构
+cmake --install build-vscode --prefix dist
+
+# 打成压缩包（默认 ZIP；想做成安装器加 -DCPACK_GENERATOR=NSIS，需本机有 makensis）
+cd build-vscode && cpack -G ZIP
+```
+
+产物：`build-vscode/qt-industrial-equipment-monitor-<版本>-win64.zip`（约 33 MB）。
+
+包内结构是**解压即用**的：
+
+```
+qt-industrial-equipment-monitor-<版本>-win64/
+├── bin/      可执行文件 + Qt6*.dll + qt.conf
+├── plugins/  platforms/qwindows.dll、sqldrivers/qsqlite.dll 等
+├── README.md
+└── LICENSE
+```
+
+> Qt 的运行时依赖由 `qt_generate_deploy_app_script()` 在安装阶段自动带上，
+> 不会再出现"装完双击报找不到 Qt6Core.dll"这种半成品包。
+> 翻译文件用 `NO_TRANSLATIONS` 排除了 —— 界面文案全是中文硬编码，带一堆 `qt_*.qm` 只是白占 20+ MB。
+
 **跑单元测试**
 
 核心逻辑（告警引擎、存储、配置、协议组包）有 QTest 覆盖，一条命令跑完：
@@ -264,7 +290,7 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 - [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
 - [ ] v0.7 业务闭环：告警工单与 MTTR（✅ 已完成）、断线补传与数据不丢（✅ 已完成）、Modbus 块读 + 串口 RTU
 - [ ] v0.8 技术深度：协议插件化、单元测试 + CI（✅ 已完成）、性能基线报告
-- [ ] v1.0 产品化：安装包、界面截图、日志滚动与崩溃转储（✅ 已完成）
+- [ ] v1.0 产品化：安装包（✅ 已完成）、界面截图、日志滚动与崩溃转储（✅ 已完成）
 
 ## 许可
 

@@ -118,3 +118,21 @@ target_link_libraries(${PROJECT_NAME} PRIVATE monitor_core)
 if(WIN32 AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
+
+# ---------------------------------------------------------------------------
+# 安装规则：只装可执行文件，Qt 运行时依赖交给下面的部署脚本带进来
+# ---------------------------------------------------------------------------
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+
+# 让 Qt 把自己的依赖（DLL / 平台插件 / SQL 驱动）也复制进安装目录 ——
+# 否则装出来的东西一运行就是"找不到 Qt6Core.dll"，等于没打这个包。
+if(WIN32 OR APPLE)
+    # NO_TRANSLATIONS：界面文案全是中文硬编码，带一堆 qt_*.qm 只是白占 20+ MB。
+    # 这个选项需要 Qt 6.5+；更老的 Qt 上会退化成多带几个翻译文件，不影响功能。
+    qt_generate_deploy_app_script(
+        TARGET ${PROJECT_NAME}
+        OUTPUT_SCRIPT monitor_deploy_script
+        NO_TRANSLATIONS
+        NO_UNSUPPORTED_PLATFORM_ERROR)
+    install(SCRIPT ${monitor_deploy_script})
+endif()
