@@ -8,6 +8,7 @@
 #include "ui/logindialog.h"
 #include "ui/mainwindow.h"
 #include "ui/theme.h"
+#include "utils/crashhandler.h"
 #include "utils/logger.h"
 
 int main(int argc, char *argv[])
@@ -25,6 +26,11 @@ int main(int argc, char *argv[])
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     Log::instance().init(QDir(dataDir).filePath(QStringLiteral("logs/app.log")));
     Log::info(QStringLiteral("应用启动，版本 %1").arg(QStringLiteral(APP_VERSION)));
+
+    // 崩溃转储：现场无人值守，一次崩溃没留下现场就基本没法查。
+    // 放在日志之后安装，这样崩溃前最后几条日志一定已经在盘上了。
+    CrashHandler::install(QDir(dataDir).filePath(QStringLiteral("dumps")));
+    Log::info(QStringLiteral("崩溃转储目录：%1").arg(CrashHandler::dumpDirectory()));
 
     // 登录（演示用本地账号，生产环境应换成服务端鉴权）
     LoginDialog login;
