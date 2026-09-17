@@ -1,5 +1,6 @@
 #include "comm/mockconnection.h"
 
+#include "core/devicemanager.h"
 #include "utils/logger.h"
 
 #include <QRandomGenerator>
@@ -32,6 +33,7 @@ const QList<TagSpec> &defaultSpecs()
         {QStringLiteral("pressure"), 55.0, 30.0, 85.0, false},
         {QStringLiteral("speed"), 58.0, 30.0, 88.0, false},
         {QStringLiteral("running"), 1.0, 0.0, 1.0, true},
+        {QStringLiteral("vibration"), 30.0, 10.0, 60.0, false},
     };
     return specs;
 }
@@ -160,6 +162,19 @@ void MockConnection::setTags(const QStringList &tags)
 QStringList MockConnection::tags() const
 {
     return m_tags;
+}
+
+void MockConnection::configure(const DeviceInfo &device)
+{
+    // 模拟源没有协议参数，只需把"点位表"和"采集周期"套进来。
+    if (!device.points.isEmpty()) {
+        QStringList ids;
+        ids.reserve(device.points.size());
+        for (const TagPoint &point : device.points)
+            ids << point.id;
+        setTags(ids);
+    }
+    setIntervalMs(device.pollIntervalMs);
 }
 
 void MockConnection::setIntervalMs(int intervalMs)

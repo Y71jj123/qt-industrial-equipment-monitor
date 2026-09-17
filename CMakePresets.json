@@ -1,0 +1,35 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "qt-mingw-debug",
+      "displayName": "Qt 6.11.2 MinGW (Debug)",
+      "description": "Qt 6.11.2 + MinGW 13.1.0 + Ninja, Debug build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-vscode",
+      "cmakeExecutable": "E:/Qt/Tools/CMake_64/bin/cmake.exe",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_C_COMPILER": "E:/Qt/Tools/mingw1310_64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "E:/Qt/Tools/mingw1310_64/bin/g++.exe",
+        "CMAKE_PREFIX_PATH": "E:/Qt/6.11.2/mingw_64"
+      },
+      "environment": {
+        "PATH": "E:/Qt/Tools/mingw1310_64/bin;E:/Qt/6.11.2/mingw_64/bin;E:/Qt/Tools/Ninja;$penv{PATH}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "qt-mingw-debug-build",
+      "configurePreset": "qt-mingw-debug"
+    }
+  ],
+  "testPresets": []
+}

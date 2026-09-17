@@ -5,7 +5,9 @@
 #include "core/alarmengine.h"
 #include "core/devicemanager.h"
 #include "storage/datastorage.h"
+#include "ui/logindialog.h"
 #include "ui/mainwindow.h"
+#include "ui/theme.h"
 #include "utils/logger.h"
 
 int main(int argc, char *argv[])
@@ -16,12 +18,23 @@ int main(int argc, char *argv[])
     QApplication::setApplicationVersion(QStringLiteral(APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("Y71jj123"));
 
+    // 全局样式：工业风浅色主题（集中维护在 ui/theme.cpp）
+    app.setStyleSheet(applicationStyleSheet());
+
     // 日志与数据库都放在系统标准的应用数据目录，不跟着工作目录跑
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     Log::instance().init(QDir(dataDir).filePath(QStringLiteral("logs/app.log")));
     Log::info(QStringLiteral("应用启动，版本 %1").arg(QStringLiteral(APP_VERSION)));
 
-    // 数据层：本地历史数据（失败不致命，仅影响历史查询功能）
+    // 登录（演示用本地账号，生产环境应换成服务端鉴权）
+    LoginDialog login;
+    if (login.exec() != QDialog::Accepted)
+        return 0;
+
+    Log::info(QStringLiteral("用户 %1（%2）已登录")
+                  .arg(login.userName(), userRoleName(login.role())));
+
+    // 数据层：本地历史数据（失败不致命，仅影响历史查询 / 统计功能）
     DataStorage storage;
     if (!storage.open()) {
         Log::warn(QStringLiteral("本地数据库打开失败，历史数据功能将不可用"));
@@ -32,7 +45,8 @@ int main(int argc, char *argv[])
     AlarmEngine alarmEngine;
 
     // 界面层
-    MainWindow window(&deviceManager, &alarmEngine, &storage);
+    MainWindow window(&deviceManager, &alarmEngine, &storage,
+                      login.userName(), login.role());
     window.show();
 
     const int code = app.exec();

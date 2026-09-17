@@ -4,6 +4,8 @@
 #include <QString>
 #include <QVariant>
 
+struct DeviceInfo;
+
 /// 设备通信的抽象接口。
 ///
 /// 所有具体协议实现（Modbus TCP/RTU、MQTT、自定义 TCP）都继承本类，
@@ -19,6 +21,12 @@ public:
     {
     }
     ~DeviceConnection() override = default;
+
+    /// 用设备配置初始化连接（点位表、从站地址、采集周期等）。
+    ///
+    /// 采集调度器在 open() 之前调用，是上层把"配置"喂给"协议实现"的唯一入口。
+    /// 默认实现什么都不做 —— 不关心配置的实现（如模拟设备）可直接沿用。
+    virtual void configure(const DeviceInfo &device) { Q_UNUSED(device); }
 
     /// 建立连接。host 形如 "192.168.1.10"，port 为协议端口（Modbus TCP 默认 502）。
     virtual bool open(const QString &host, quint16 port) = 0;
