@@ -714,34 +714,41 @@ void MainWindow::rebuildDeviceTree()
 
     // 重建期间屏蔽信号：中途的空树会触发一串选中变化，
     // 让趋势图和详情面板跟着闪，而这一切都发生在"用户什么都没点"的时候。
-    const QSignalBlocker blocker(m_deviceTree);
-    m_deviceTree->clear();
-
+    //
+    // ⚠️ QSignalBlocker 是 RAII，**作用域必须只包住重建这一段**。
+    // 之前它一直延伸到函数末尾，把下面还原选中时的 setCurrentItem 也一起屏蔽了 ——
+    // 结果树上显示着选中某台设备，右侧趋势图与详情面板却收不到通知、停在旧状态
+    // （典型的症状：树上明明选中了设备，趋势曲线却是空的）。
     const QList<DeviceInfo> devices = m_deviceManager->devices();
     const QStringList groups = m_deviceManager->groups();
 
-    for (const QString &group : groups) {
-        auto *groupItem = new QTreeWidgetItem(m_deviceTree);
-        groupItem->setData(0, kRoleDeviceId, QString());
-        groupItem->setData(0, kRoleItemType, int(ItemGroup));
-        groupItem->setData(0, kRoleGroupName, group);
+    {
+        const QSignalBlocker blocker(m_deviceTree);
+        m_deviceTree->clear();
 
-        QFont font = groupItem->font(0);
-        font.setBold(true);
-        groupItem->setFont(0, font);
-        groupItem->setIcon(0, makeIcon(IconType::DeviceGroup, themeIconColor(m_theme)));
+        for (const QString &group : groups) {
+            auto *groupItem = new QTreeWidgetItem(m_deviceTree);
+            groupItem->setData(0, kRoleDeviceId, QString());
+            groupItem->setData(0, kRoleItemType, int(ItemGroup));
+            groupItem->setData(0, kRoleGroupName, group);
 
-        for (const DeviceInfo &device : devices) {
-            if (device.groupName() != group)
-                continue;
+            QFont font = groupItem->font(0);
+            font.setBold(true);
+            groupItem->setFont(0, font);
+            groupItem->setIcon(0, makeIcon(IconType::DeviceGroup, themeIconColor(m_theme)));
 
-            auto *deviceItem = new QTreeWidgetItem(groupItem);
-            deviceItem->setData(0, kRoleDeviceId, device.id);
-            deviceItem->setData(0, kRoleItemType, int(ItemDevice));
+            for (const DeviceInfo &device : devices) {
+                if (device.groupName() != group)
+                    continue;
+
+                auto *deviceItem = new QTreeWidgetItem(groupItem);
+                deviceItem->setData(0, kRoleDeviceId, device.id);
+                deviceItem->setData(0, kRoleItemType, int(ItemDevice));
+            }
+
+            groupItem->setExpanded(!collapsedGroups.contains(group));
         }
-
-        groupItem->setExpanded(!collapsedGroups.contains(group));
-    }
+    } // ← 信号在这里恢复
 
     // 逐个设备补状态灯与文字（分组节点的"在线数 / 总数"也在里面刷）
     for (const DeviceInfo &device : devices)
@@ -759,8 +766,9 @@ void MainWindow::rebuildDeviceTree()
         }
     }
 
-    m_deviceTree->setCurrentItem(target); // 信号已解除屏蔽，这里会正常同步右侧面板
-    if (!target)
+    if (target)
+        m_deviceTree->setCurrentItem(target); // 信号已恢复，这里会真的同步右侧面板
+    else
         syncDeviceSelection(QString());
 }
 
