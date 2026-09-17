@@ -103,6 +103,7 @@ qt-industrial-equipment-monitor/
 ├── CMakeLists.txt          # 顶层构建配置
 ├── CMakePresets.json       # VS Code / CLI 构建预设
 ├── CLAUDE.md               # AI 编码助手项目上下文（约定 + 已知坑）
+├── ROADMAP.md              # 迭代计划（落点文件 + 验收标准 + 里程碑）
 ├── README.md
 ├── tools/                  # 零依赖本地模拟器（Modbus 从站 / MQTT 发布）
 └── src/
@@ -229,12 +230,18 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 
 ## Roadmap
 
+> **完整的迭代计划见 [ROADMAP.md](./ROADMAP.md)** —— 含每项的落点文件、验收标准与里程碑。
+> 下面是已完成部分。
+
 - [x] v0.1 设备接入 + 实时数据展示
 - [x] v0.2 告警引擎 + 历史曲线
 - [x] v0.3 远程控制 + 用户权限
 - [x] v0.4 报表导出与运维统计
 - [x] v0.5 体验升级：双主题视觉、告警通知体系、采集线程化、曲线交互、配置导入导出、Excel 报表
 - [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
+- [ ] v0.7 业务闭环：告警工单与 MTTR、Modbus 块读 + 串口 RTU、断线缓存补传
+- [ ] v0.8 技术深度：协议插件化、单元测试 + CI、性能基线报告
+- [ ] v1.0 产品化：安装包、界面截图、日志滚动与崩溃转储
 
 ## 许可
 
