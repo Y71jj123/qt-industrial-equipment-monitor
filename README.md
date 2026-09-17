@@ -208,14 +208,20 @@ E:/Qt/6.11.2/mingw_64/bin/windeployqt.exe --no-translations \
 **打成可发布的安装包（CPack）**
 
 ```bash
+# ⚠️ 出包请用 Release —— Debug 的包又大又慢（本机实测：Debug 约 41 MB，
+#    且运行时性能明显低于 README「性能基线」里那份 Release 数字）
+cmake --preset qt-mingw-release          # 或者手动 -DCMAKE_BUILD_TYPE=Release
+cmake --build --preset qt-mingw-release-build --parallel
+
 # 装到一个目录，看一下产物结构
-cmake --install build-vscode --prefix dist
+cmake --install build-release --prefix dist
 
 # 打成压缩包（默认 ZIP；想做成安装器加 -DCPACK_GENERATOR=NSIS，需本机有 makensis）
-cd build-vscode && cpack -G ZIP
+cd build-release && cpack -G ZIP
 ```
 
-产物：`build-vscode/qt-industrial-equipment-monitor-<版本>-win64.zip`（约 33 MB）。
+产物：`build-release/qt-industrial-equipment-monitor-<版本>-win64.zip`（Release，**约 27 MB**；
+同样内容用 Debug 出包是 41 MB —— exe 一个 1.4 MB 一个 30 MB，差别全在这里）。
 
 包内结构是**解压即用**的：
 
@@ -351,7 +357,7 @@ cmake --build build-bench --parallel
 ```
 
 **测试环境**：AMD Ryzen 7 7840H（16 逻辑核）/ 23 GB / Windows 11 家庭版中文版 /
-MinGW 13.1 + Qt 6.11.2 / **Release 构建** / SQLite 走 `QSQLITE` 驱动。
+MinGW 13.1 + Qt 6.11.2 / **Release 构建**（`cmake --preset qt-mingw-release`）/ SQLite 走 `QSQLITE` 驱动。
 夹具测的是**「采集 → 落库」这条链路，不含界面渲染** —— 渲染受显示器与窗口大小影响，
 测出来的数字没有可比性。
 

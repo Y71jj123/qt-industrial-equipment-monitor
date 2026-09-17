@@ -23,13 +23,43 @@
       "environment": {
         "PATH": "E:/Qt/Tools/mingw1310_64/bin;E:/Qt/6.11.2/mingw_64/bin;E:/Qt/Tools/Ninja;$penv{PATH}"
       }
+    },
+    {
+      "name": "qt-mingw-release",
+      "displayName": "Qt 6.11.2 MinGW (Release)",
+      "description": "Debug 之外再留一个 Release：出安装包 / 跑性能基线用这个（包更小、跑得更快，也是 README 性能数字的口径）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "cmakeExecutable": "E:/Qt/Tools/CMake_64/bin/cmake.exe",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_C_COMPILER": "E:/Qt/Tools/mingw1310_64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "E:/Qt/Tools/mingw1310_64/bin/g++.exe",
+        "CMAKE_PREFIX_PATH": "E:/Qt/6.11.2/mingw_64"
+      },
+      "environment": {
+        "PATH": "E:/Qt/Tools/mingw1310_64/bin;E:/Qt/6.11.2/mingw_64/bin;E:/Qt/Tools/Ninja;$penv{PATH}"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "qt-mingw-debug-build",
       "configurePreset": "qt-mingw-debug"
+    },
+    {
+      "name": "qt-mingw-release-build",
+      "configurePreset": "qt-mingw-release"
     }
   ],
-  "testPresets": []
+  "testPresets": [
+    {
+      "name": "qt-mingw-release-test",
+      "configurePreset": "qt-mingw-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
 }
