@@ -3,6 +3,7 @@
 #include "utils/logger.h"
 
 #include <QAbstractSocket>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -19,6 +20,30 @@ enum MqttPacketType {
     PacketPublish = 3,
     PacketSubscribe = 8,
 };
+
+/// CONNACK 返回码的中文解释（3.1.1 规范）。
+///
+/// 单独翻译的意义在于：填错账号密码时 broker 会回返回码 4/5，
+/// 不翻译的话界面上只剩"未收到 CONNACK"，让人以为是网络问题。
+QString connAckReason(int code)
+{
+    switch (code) {
+    case 0:
+        return QStringLiteral("连接已接受");
+    case 1:
+        return QStringLiteral("协议版本不支持");
+    case 2:
+        return QStringLiteral("客户端标识不合法");
+    case 3:
+        return QStringLiteral("服务端不可用");
+    case 4:
+        return QStringLiteral("用户名或密码错误");
+    case 5:
+        return QStringLiteral("未授权");
+    default:
+        return QStringLiteral("未知原因");
+    }
+}
 
 } // namespace
 
@@ -86,6 +111,9 @@ void MqttConnection::configure(const DeviceInfo &device)
         // 未指定主题时给一个带设备 id 前缀的通配主题，便于多设备区分。
         m_topic = QStringLiteral("dsh/%1/#").arg(device.id.left(8));
     }
+
+    // 接入账号：空即匿名。密码单独判空 —— 有些 broker 允许"有用户名、无密码"。
+    setCredentials(device.username, device.password);
 }
 
 bool MqttConnection::open(const QString &host, quint16 port)
@@ -128,19 +156,38 @@ bool MqttConnection::open(const QString &host, quint16 port)
 
     sendConnect();
 
-    // 等 CONNACK（固定头 0x20）。收不到不致命，继续往下走由 onReadyRead 兜底。
-    if (m_socket->waitForReadyRead(m_timeoutMs)) {
-        const QByteArray data = m_socket->readAll();
-        if (data.isEmpty() || quint8(data.at(0)) != char(0x20)) {
-            m_buffer.append(data); // 不是 CONNACK，交给统一解析器
-        }
-    } else {
-        emit errorOccurred(QStringLiteral("MQTT 未收到 CONNACK，仍尝试订阅 %1").arg(m_topic));
+    // 等 CONNACK。
+    //
+    // ⚠️ 这里**不能**去读 socket 缓冲区：CONNACK 会先被 readyRead → onReadyRead 收走
+    // 并放进 m_buffer，open() 里再 readAll() 只会拿到空数组 —— 早先就是这么
+    // 把"账号密码错误"当成连接成功的。正确做法是等 onReadyRead 把结论写进标志位。
+    m_connAckReceived = false;
+    m_connRejected = false;
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (!m_connAckReceived && !m_connRejected && elapsed.elapsed() < m_timeoutMs) {
+        const qint64 remaining = m_timeoutMs - elapsed.elapsed();
+        m_socket->waitForReadyRead(int(qMax<qint64>(1, remaining)));
     }
+
+    if (m_connRejected) {
+        // 具体原因由 onReadyRead 报过了，这里只负责把"建连失败"传回去
+        close();
+        return false;
+    }
+
+    if (!m_connAckReceived)
+        emit errorOccurred(QStringLiteral("MQTT 未收到 CONNACK，仍尝试订阅 %1").arg(m_topic));
 
     sendSubscribe();
     m_open = true;
-    Log::info(QStringLiteral("MQTT 已连接 %1:%2（订阅 %3）").arg(host).arg(port).arg(m_topic));
+    Log::info(QStringLiteral("MQTT 已连接 %1:%2（订阅 %3%4）")
+                  .arg(host)
+                  .arg(port)
+                  .arg(m_topic)
+                  .arg(m_username.isEmpty() ? QString()
+                                            : QStringLiteral("，账号 %1").arg(m_username)));
     emit opened();
 
     if (!m_pingTimer) {
@@ -178,15 +225,31 @@ bool MqttConnection::isOpen() const
 
 void MqttConnection::sendConnect()
 {
+    const bool hasUser = !m_username.isEmpty();
+    const bool hasPass = !m_password.isEmpty();
+
+    // 连接标志（3.1.1）第 7 位 = 有用户名，第 6 位 = 有密码。
+    // 规范要求"密码标志置位时用户名标志必须置位"，所以只填了密码也要把用户名带上（空串）。
+    quint8 flags = 0x02; // Clean Session
+    if (hasUser || hasPass)
+        flags |= 0x80;
+    if (hasPass)
+        flags |= 0x40;
+
     QByteArray variable;
     variable += encodeString(QStringLiteral("MQTT")); // 协议名
     variable.append(char(0x04));                      // 协议级别 4 = 3.1.1
-    variable.append(char(0x02));                      // 连接标志：Clean Session
+    variable.append(char(flags));                     // 连接标志
     variable.append(char(quint8((m_keepAliveSec >> 8) & 0xFF)));
     variable.append(char(quint8(m_keepAliveSec & 0xFF)));
 
+    // 载荷顺序是规范定死的：ClientId → [Will] → UserName → Password
     QByteArray payload;
     payload += encodeString(m_clientId);
+    if (flags & 0x80)
+        payload += encodeString(m_username);
+    if (flags & 0x40)
+        payload += encodeString(m_password);
 
     QByteArray packet;
     packet.append(char(0x10)); // CONNECT
@@ -238,20 +301,39 @@ void MqttConnection::onReadyRead()
 {
     m_buffer += m_socket->readAll();
 
+    bool rejected = false;
+
     while (true) {
         if (m_buffer.size() < 2)
-            return;
+            break;
 
         int offset = 1;
         bool ok = false;
         const int remaining = decodeLength(m_buffer, offset, ok);
         if (!ok || m_buffer.size() < offset + remaining)
-            return; // 半包，等更多数据
+            break; // 半包，等更多数据
 
         const quint8 header = quint8(m_buffer.at(0));
         const int type = header >> 4;
         const QByteArray body = m_buffer.mid(offset, remaining);
         m_buffer.remove(0, offset + remaining);
+
+        if (type == PacketConnAck) {
+            // 载荷：连接确认标志(1 字节) + 返回码(1 字节)
+            m_connAckReceived = true;
+            if (body.size() >= 2) {
+                const int code = quint8(body.at(1));
+                if (code != 0) {
+                    m_connRejected = true;
+                    emit errorOccurred(QStringLiteral("MQTT 接入被拒绝：%1（返回码 %2）")
+                                           .arg(connAckReason(code))
+                                           .arg(code));
+                    rejected = true;
+                    break;
+                }
+            }
+            continue;
+        }
 
         if (type == PacketPublish) {
             if (body.size() < 2)
@@ -269,8 +351,12 @@ void MqttConnection::onReadyRead()
                 continue;
             handlePublish(topic, body.mid(pos));
         }
-        // CONNACK / SUBACK / PINGRESP 等无需处理
+        // SUBACK / PINGRESP 等无需处理
     }
+
+    // close() 会动到 socket，放在解析循环之外调用，免得边解析边把管子拆了
+    if (rejected)
+        close();
 }
 
 void MqttConnection::handlePublish(const QByteArray &topic, const QByteArray &payload)

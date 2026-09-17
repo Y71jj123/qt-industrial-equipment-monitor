@@ -45,6 +45,8 @@ struct Palette {
     QColor onAccent;         // 强调色之上的文字
     QColor danger;
     QColor dangerHover;
+    QColor success;          // 正常 / 在线 / 达标
+    QColor warning;          // 注意 / 故障 / 越限
     QColor toolbarBg;
     QColor toolButtonBg;
     QColor toolButtonBorder;
@@ -82,6 +84,8 @@ Palette lightPalette()
     p.onAccent          = QColor(0xffffff);
     p.danger            = QColor(0xd94a4a);
     p.dangerHover       = QColor(0xe25c5c);
+    p.success           = QColor(0x2f9e63); // 与设备树的"在线"绿灯同色系，暗一档保证白底可读
+    p.warning           = QColor(0xd4832a);
     p.toolbarBg         = QColor(0xffffff);
     p.toolButtonBg      = QColor(0xf7fafd);
     p.toolButtonBorder  = QColor(0xd6e0ea);
@@ -120,6 +124,8 @@ Palette darkPalette()
     p.onAccent          = QColor(0xffffff);
     p.danger            = QColor(0xd15454);
     p.dangerHover       = QColor(0xe06666);
+    p.success           = QColor(0x3fbc78); // 深底上要提高明度，否则绿字发闷
+    p.warning           = QColor(0xe8a04a);
     p.toolbarBg         = QColor(0x1f2732);
     p.toolButtonBg      = QColor(0x262f3b);
     p.toolButtonBorder  = QColor(0x36414f);
@@ -168,6 +174,8 @@ QHash<QString, QString> paletteValues(const Palette &p)
         {QStringLiteral("onAccent"), p.onAccent.name()},
         {QStringLiteral("danger"), p.danger.name()},
         {QStringLiteral("dangerHover"), p.dangerHover.name()},
+        {QStringLiteral("success"), p.success.name()},
+        {QStringLiteral("warning"), p.warning.name()},
         {QStringLiteral("toolbarBg"), p.toolbarBg.name()},
         {QStringLiteral("toolButtonBg"), p.toolButtonBg.name()},
         {QStringLiteral("toolButtonBorder"), p.toolButtonBorder.name()},
@@ -415,6 +423,39 @@ QGroupBox::title {
     color: @accentText;
     font-weight: 600;
 }
+
+/* ==================== 总览仪表盘 ==================== */
+/* KPI 卡片：左侧一道色条区分语义（正常 / 注意 / 严重 / 中性），
+   数值用大字号承担视觉重心 —— 隔着两米看大屏也能一眼读出关键指标。 */
+QFrame#kpiCard, QFrame#kpiCardOk, QFrame#kpiCardWarn, QFrame#kpiCardDanger {
+    background: @surface;
+    border: 1px solid @border;
+    border-radius: 10px;
+}
+QFrame#kpiCard       { border-left: 3px solid @accent; }
+QFrame#kpiCardOk     { border-left: 3px solid @success; }
+QFrame#kpiCardWarn   { border-left: 3px solid @warning; }
+QFrame#kpiCardDanger { border-left: 3px solid @danger; }
+
+QLabel#kpiTitle { color: @textMuted; font-size: 12px; }
+QLabel#kpiHint  { color: @textFaint; font-size: 11px; }
+QLabel#kpiValue { color: @titleText; font-size: 28px; font-weight: 700; }
+QLabel#kpiValueOk     { color: @success; }
+QLabel#kpiValueWarn   { color: @warning; }
+QLabel#kpiValueDanger { color: @danger; }
+QLabel#kpiUnit  { color: @textFaint; font-size: 12px; }
+
+/* 设备状态小卡：比 KPI 卡弱一档（次级面 + 更小圆角），避免两片"白块"抢注意力 */
+QFrame#deviceCard {
+    background: @surfaceAlt;
+    border: 1px solid @border;
+    border-radius: 8px;
+}
+QLabel#sectionTitle { font-size: 14px; font-weight: 600; color: @titleText; }
+QLabel#deviceCardName  { font-weight: 600; color: @text; }
+QLabel#deviceCardValue { font-size: 17px; font-weight: 600; color: @titleText; }
+QLabel#deviceCardMeta  { color: @textFaint; font-size: 11px; }
+QLabel#emptyHint { color: @textFaint; }
 
 /* ==================== 日志区 ==================== */
 /* 两套主题都保持等宽字体 + 深色控制台，日志的可读性优先于配色统一 */

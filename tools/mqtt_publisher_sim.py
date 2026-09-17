@@ -12,12 +12,18 @@
     # 本地 mosquitto / EMQX（如果装了）
     python mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1
 
+    # broker 要求账号时（与项目里设备的「接入账号 / 密码」填一致）
+    python mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
+        --username factory --password secret
+
 然后在项目的「添加设备」里填：
 
     协议      MQTT
     地址      broker.emqx.io    （或 127.0.0.1）
     端口      1883
     订阅主题  factory/line1/#
+    接入账号  factory        （broker 不要求就留空 = 匿名）
+    接入密码  secret
 
 发布格式（本脚本两种都能演示）
 ------------------------------
@@ -70,9 +76,24 @@ def encode_string(text: str) -> bytes:
     return struct.pack(">H", len(data)) + data
 
 
-def build_connect(client_id: str, keepalive: int = 60) -> bytes:
-    variable = encode_string("MQTT") + bytes([0x04, 0x02]) + struct.pack(">H", keepalive)
+def build_connect(client_id: str, keepalive: int = 60,
+                  username: str = "", password: str = "") -> bytes:
+    """组 CONNECT 报文。给了 username/password 就带上接入鉴权字段。"""
+    flags = 0x02  # Clean Session
+    # 规范要求密码标志置位时用户名标志必须置位
+    if username or password:
+        flags |= 0x80
+    if password:
+        flags |= 0x40
+
+    variable = encode_string("MQTT") + bytes([0x04, flags]) + struct.pack(">H", keepalive)
+
     payload = encode_string(client_id)
+    if flags & 0x80:
+        payload += encode_string(username)
+    if flags & 0x40:
+        payload += encode_string(password)
+
     return bytes([0x10]) + encode_length(len(variable) + len(payload)) + variable + payload
 
 
@@ -90,6 +111,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=["json", "single"], default="json")
     parser.add_argument("--interval", type=float, default=1.0, help="发布周期秒")
     parser.add_argument("--client-id", default="dsh-sim-publisher")
+    parser.add_argument("--username", default="", help="broker 接入账号（留空 = 匿名）")
+    parser.add_argument("--password", default="", help="broker 接入密码")
     args = parser.parse_args()
 
     print(f"正在连接 broker {args.host}:{args.port} …")
@@ -99,7 +122,7 @@ def main() -> None:
         print(f"连接失败：{error}")
         return
 
-    sock.sendall(build_connect(args.client_id))
+    sock.sendall(build_connect(args.client_id, username=args.username, password=args.password))
 
     try:
         connack = sock.recv(4)
@@ -113,7 +136,10 @@ def main() -> None:
         sock.close()
         return
     if connack[3] != 0:
-        print(f"broker 拒绝连接，返回码 {connack[3]}")
+        reasons = {1: "协议版本不支持", 2: "客户端标识不合法", 3: "服务端不可用",
+                   4: "用户名或密码错误", 5: "未授权"}
+        reason = reasons.get(connack[3], "未知原因")
+        print(f"broker 拒绝连接：{reason}（返回码 {connack[3]}）")
         sock.close()
         return
 

@@ -37,6 +37,7 @@ class ControlPanel;
 class DataStorage;
 class DeviceDetailPanel;
 class HistoryPanel;
+class OverviewPanel;
 class ReportPanel;
 class RulePanel;
 
@@ -191,6 +192,8 @@ private:
     QLabel *m_userLabel = nullptr;
 
     QTabWidget *m_rightTabs = nullptr;
+    /// 总览仪表盘（第一个页签，即"首页"）。
+    OverviewPanel *m_overviewPanel = nullptr;
     AlarmPanel *m_alarmPanel = nullptr;
     AlarmHistoryPanel *m_alarmHistoryPanel = nullptr;
     DeviceDetailPanel *m_detailPanel = nullptr;

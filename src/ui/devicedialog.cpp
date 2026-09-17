@@ -22,7 +22,7 @@ DeviceDialog::DeviceDialog(QWidget *parent)
 void DeviceDialog::setupUi()
 {
     setWindowTitle(QStringLiteral("设备配置"));
-    resize(640, 520);
+    resize(660, 600);
 
     auto *form = new QFormLayout;
 
@@ -61,8 +61,18 @@ void DeviceDialog::setupUi()
     m_topicEdit = new QLineEdit(this);
     m_topicEdit->setPlaceholderText(QStringLiteral("例如：factory/line1/#"));
 
+    // MQTT 接入账号：留空即匿名接入（内网 broker 的常见配置）
+    m_userEdit = new QLineEdit(this);
+    m_userEdit->setPlaceholderText(QStringLiteral("留空 = 匿名接入"));
+
+    m_passwordEdit = new QLineEdit(this);
+    m_passwordEdit->setEchoMode(QLineEdit::Password);
+    m_passwordEdit->setPlaceholderText(QStringLiteral("留空 = 不发送密码"));
+
     m_slaveLabel = new QLabel(QStringLiteral("从站地址"), this);
     m_topicLabel = new QLabel(QStringLiteral("订阅主题"), this);
+    m_userLabel = new QLabel(QStringLiteral("接入账号"), this);
+    m_passwordLabel = new QLabel(QStringLiteral("接入密码"), this);
 
     form->addRow(QStringLiteral("设备名称"), m_nameEdit);
     form->addRow(QStringLiteral("所属分组"), m_groupBox);
@@ -71,6 +81,8 @@ void DeviceDialog::setupUi()
     form->addRow(QStringLiteral("端口"), m_portSpin);
     form->addRow(m_slaveLabel, m_slaveSpin);
     form->addRow(m_topicLabel, m_topicEdit);
+    form->addRow(m_userLabel, m_userEdit);
+    form->addRow(m_passwordLabel, m_passwordEdit);
     form->addRow(QStringLiteral("采集周期"), m_intervalSpin);
 
     m_pointTable = new QTableWidget(0, 6, this);
@@ -88,7 +100,11 @@ void DeviceDialog::setupUi()
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     auto *hint = new QLabel(
-        QStringLiteral("点位表：Modbus 用「寄存器地址 + 类型」；MQTT 用「点位 ID」匹配上报字段。"), this);
+        QStringLiteral("点位表：Modbus 用「寄存器地址 + 类型」；MQTT 用「点位 ID」匹配上报字段。\n"
+                       "接入账号 / 密码仅 MQTT 使用，留空即匿名接入（密码按明文保存，仅适合内网）。"),
+        this);
+    hint->setObjectName(QStringLiteral("panelHint"));
+    hint->setWordWrap(true);
 
     auto *layout = new QVBoxLayout(this);
     layout->addLayout(form);
@@ -120,6 +136,11 @@ void DeviceDialog::applyProtocolVisibility()
     m_slaveSpin->setVisible(isModbus);
     m_topicLabel->setVisible(isMqtt);
     m_topicEdit->setVisible(isMqtt);
+    // 账号只对 MQTT 有意义：Modbus / Mock 没有"接入账号"这个概念
+    m_userLabel->setVisible(isMqtt);
+    m_userEdit->setVisible(isMqtt);
+    m_passwordLabel->setVisible(isMqtt);
+    m_passwordEdit->setVisible(isMqtt);
 }
 
 void DeviceDialog::loadPoints(const QList<TagPoint> &points)
@@ -214,6 +235,8 @@ void DeviceDialog::setDevice(const DeviceInfo &device)
     m_slaveSpin->setValue(device.slaveId);
     m_intervalSpin->setValue(device.pollIntervalMs);
     m_topicEdit->setText(device.mqttTopic);
+    m_userEdit->setText(device.username);
+    m_passwordEdit->setText(device.password);
 
     // 端口放在协议之后设置，避免被 onProtocolChanged 的默认值覆盖。
     m_portSpin->setValue(device.port);
@@ -237,6 +260,17 @@ DeviceInfo DeviceDialog::device() const
     info.pollIntervalMs = m_intervalSpin->value();
     info.mqttTopic = m_topicEdit->text().trimmed();
     info.points = collectPoints();
+
+    // 账号只在 MQTT 下保留：切回 Modbus / Mock 时把残留的账号清掉，
+    // 否则导出配置里会带着一份用不上的明文口令。
+    if (info.protocol == DeviceProtocol::Mqtt) {
+        info.username = m_userEdit->text().trimmed();
+        // 密码不做 trim：口令里的首尾空格是有效字符，替用户"修正"反而会造成登录失败
+        info.password = m_passwordEdit->text();
+    } else {
+        info.username.clear();
+        info.password.clear();
+    }
 
     if (info.name.isEmpty())
         info.name = protocolName(info.protocol);

@@ -137,6 +137,16 @@ public:
 
     QList<DeviceStats> queryDeviceStats(const QDateTime &from, const QDateTime &to) const;
 
+    /// 时间区间内的采样点总数。
+    ///
+    /// 单独开一个 COUNT 而不是复用 queryDeviceStats()：仪表盘每几秒就要刷一次，
+    /// 而后者会把全表按 `device` 分组算一遍（还多跑一条告警统计），开销不成比例。
+    /// 区间传 QDateTime() （无效值）表示不限时间。
+    qint64 countSamples(const QDateTime &from = QDateTime(), const QDateTime &to = QDateTime()) const;
+
+    /// 时间区间内的告警条数（含已恢复的）。
+    int countAlarms(const QDateTime &from = QDateTime(), const QDateTime &to = QDateTime()) const;
+
     QString lastError() const;
 
 private:

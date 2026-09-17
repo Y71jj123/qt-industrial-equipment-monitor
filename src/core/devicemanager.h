@@ -63,6 +63,21 @@ struct DeviceInfo
     QList<TagPoint> points;        ///< 点位表（为空时按 defaultTagPoints() 处理）
     QString group;                 ///< 所属分组（空 = 默认分组）
 
+    /// MQTT 接入账号 / 密码（protocol == Mqtt 时使用）。
+    ///
+    /// 两者都为空即匿名接入 —— 这是绝大多数内网 broker 的默认配置，
+    /// 所以不设默认账号，宁可空着也不去猜一个"admin"。
+    /// 注意：按本项目"配置即纯文本"的一贯做法，密码以明文存在数据库与导出文件里，
+    /// 仅用于现场内网设备的接入鉴权，不要拿它当生产级密钥管理。
+    QString username;
+    QString password;
+
+    /// 是否需要带账号接入（MQTT 且填了用户名）。
+    bool hasCredentials() const
+    {
+        return protocol == DeviceProtocol::Mqtt && !username.isEmpty();
+    }
+
     /// 所属分组名，永不为空 —— 界面直接拿它显示，不必到处判空。
     QString groupName() const { return group.isEmpty() ? defaultGroupName() : group; }
 
