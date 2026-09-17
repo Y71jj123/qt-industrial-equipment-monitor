@@ -55,6 +55,8 @@ set(PROJECT_SOURCES
     # Utils
     utils/logger.h
     utils/logger.cpp
+    utils/crashhandler.h
+    utils/crashhandler.cpp
     utils/configio.h
     utils/configio.cpp
     utils/excelexporter.h
@@ -84,6 +86,11 @@ target_link_libraries(monitor_core PUBLIC
 if(Qt${QT_VERSION_MAJOR}Charts_FOUND)
     target_link_libraries(monitor_core PUBLIC Qt${QT_VERSION_MAJOR}::Charts)
     target_compile_definitions(monitor_core PUBLIC HAVE_QT_CHARTS)
+endif()
+
+if(WIN32)
+    # 崩溃转储用到 MiniDumpWriteDump
+    target_link_libraries(monitor_core PUBLIC dbghelp)
 endif()
 
 # 应用名与版本号（从顶层 project() 继承），供源码中的 APP_NAME / APP_VERSION 使用

@@ -79,6 +79,18 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
    - **写入时必须区分"有值"和"NULL"**：未处理的告警要把 `disposition/handled_at` 写成 NULL，
      不能写 `disposition` 的默认值 0（那是"已处理恢复"）—— 否则报表会把未处理告警算成已处理。
      判断"是否处理过"**永远以 `handled_at` 是否有效为准**，不要看 disposition 的值。
+
+## 长期运行相关（日志 / 崩溃）
+
+- **日志文件的打开模式不能带 `QIODevice::Text`**：Text 模式在 Windows 上会把 `\n` 翻成 `\r\n`，
+  于是"写入的字节数"和"磁盘上的字节数"每行差 1 字节。滚动阈值是按前者算的，
+  结果文件会稳定超出上限（实测 4096 上限跑出 4224）。日志不需要 CRLF，保持纯 LF。
+- **崩溃处理器里一行 Qt 都不能调**（`utils/crashhandler.cpp` 的过滤器/信号处理器）。
+  崩溃时堆与栈状态都不可信，任何分配内存的操作都可能二次崩溃，结果是连转储都留不下来。
+  只能用 Win32 API 与栈上的缓冲；文件名用 `_snwprintf`（`wsprintf`/`swprintf` 在
+  MSVC 与 MinGW 上的原型不一致，而"某编译器编不过"是崩溃处理器最不该有的问题）。
+- 崩溃处理器处理完要**交回系统默认行为**（`EXCEPTION_CONTINUE_SEARCH` / 恢复信号默认处置后重新 raise），
+  不要吞掉异常 —— 静默退出会让退出码变成"正常"，比崩溃本身更难查。
 6. **MQTT 的 CONNACK 只能在 `onReadyRead` 里判** —— 建连后的数据会先经 `readyRead`
    被 `onReadyRead` 收进 `m_buffer`；`open()` 里再 `socket->readAll()` 只会拿到空数组，
    于是"账号密码错误（返回码 4）"会被当成连接成功。

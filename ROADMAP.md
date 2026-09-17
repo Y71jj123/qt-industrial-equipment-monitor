@@ -107,7 +107,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 
 - **P2-1** `cmake --install` + CPack 生成安装包（NSIS / ZIP），附开始菜单快捷方式。
 - **P2-2** 运行截图 / 动图 + 架构图补全（README 现在只有 mermaid 流程图，缺真实界面）。
-- **P2-3** 日志滚动（按大小切分 + 保留 N 个）+ 崩溃转储，避免长期运行把磁盘写满。
+- **P2-3** 日志滚动（按大小切分 + 保留 N 个）+ 崩溃转储，避免长期运行把磁盘写满。 ✅ 已完成
 
 ---
 
@@ -128,6 +128,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | P0-1 工单闭环 | `AlarmDisposition` + `AlarmRecord` 处理字段；`AlarmEngine::handleAlarm/averageHandleDurationMs`；`alarms` 表补 4 列（`ensureColumn` 迁移）；告警面板「处理选中…」对话框（强制填说明）；总览页 KPI 墙扩到 2×5 加「已处理告警 / MTTR」；报表页加「已处理 / MTTR」列与 Excel 处理字段；处理动作写操作留痕 | 临时控制台测试 **32 项断言全通过**（引擎状态机 + 数据库往返 + MTTR SQL 实测 120005ms ≈ 期望 120000ms） |
 | P0-3 采样溢出队列 | 落库失败**不再丢弃**，改为 JSON Lines 追加写盘（`<db>.pending.jsonl`，64MB 闸门）；启动时按时间升序补传，**提交成功后才删队列文件**；`insertSample` 不再因"库未打开"而拒绝采样 | 临时控制台测试 **13 项断言全通过**（含用独立连接按 `rowid` 校验补传的物理写入顺序 = 时间升序；坏行容错） |
 | P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 三个 QTest 套件共 22 个用例；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **3/3 套件全绿**；CI 配置就绪 |
+| P2-3 日志滚动 + 崩溃转储 | `Log::init(path, maxBytes, maxFiles)` 按大小滚动（默认 2MB × 5 份，超限丢最老）；新增 `utils/crashhandler.*`：Windows 走 `SetUnhandledExceptionFilter` + `MiniDumpWriteDump` 产 `.dmp`，其他平台走信号处理器产带栈的 `.txt`；`main.cpp` 启动即安装 | 临时验证程序 **13 项断言全 PASS**；**真的触发一次空指针崩溃**，产出 67,927 字节的 minidump |
 
 ---
 
