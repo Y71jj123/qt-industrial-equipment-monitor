@@ -1,7 +1,9 @@
 name: build-and-test
 
-# 每次推送与 PR 都跑一遍：构建 + 零警告检查 + 单元测试。
-# 目的很直接 —— 让"能不能编译、测试过不过"这件事不依赖开发者在本地记得跑。
+# 每次推送与 PR 都跑一遍：构建 + 零警告检查 + 单元测试 + **Linux 上真的跑一次**。
+# 目的很直接 —— 让"能不能编译、测试过不过、跑不跑得起来"这三件事
+# 不依赖开发者在本地记得跑。本地开发在 Windows（MinGW），CI 在 Ubuntu，
+# 等于每次推送都顺带证明一遍项目是跨平台的。
 on:
   push:
     branches: [ main ]
@@ -11,13 +13,15 @@ on:
 
 jobs:
   build-and-test:
-    name: 构建 + 单元测试（零警告）
+    name: Linux 构建 + 单元测试 + 运行冒烟（零警告）
     runs-on: ubuntu-latest
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # CI 装的是官方 Qt 6.5.3，本地开发用的是 6.11.2 ——
+      # 顺带证明了代码不依赖某个特定的 Qt 小版本。
       - name: 安装 Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -25,11 +29,12 @@ jobs:
           modules: 'qtcharts'
           cache: true
 
-      # Qt Widgets 在 Linux 上要链接 GL；Ninja 用来对齐本地构建方式
+      # Qt Widgets 在 Linux 上要链接 GL；offscreen 平台插件跑界面还需要字体。
+      # ninja 用来对齐本地的构建方式。
       - name: 安装系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dev ninja-build
+          sudo apt-get install -y libgl1-mesa-dev ninja-build fonts-dejavu-core
 
       - name: 配置
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -53,10 +58,56 @@ jobs:
       - name: 单元测试
         run: ctest --test-dir build --output-on-failure
 
-      - name: 上传构建日志
+      - name: 构建产物（确认插件是 Linux 动态库）
+        run: |
+          ls -la build/src/qt-industrial-equipment-monitor
+          ls -la build/src/plugins/protocols/
+          file build/src/plugins/protocols/*.so
+
+      # ---- 下面这步是"构建成功"给不了的证据 ----
+      # 平台插件能不能加载、协议插件（独立 .so）能不能被 QPluginLoader 找到、
+      # 主窗口构造会不会崩 —— 只有真的运行才知道。
+      # offscreen 平台不需要显示器，正好适合 CI。
+      - name: Linux 运行冒烟（offscreen）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set +e
+          timeout 8 ./build/src/qt-industrial-equipment-monitor
+          code=$?
+          set -e
+          echo "退出码 = $code"
+
+          # 124 = 被 timeout 杀掉 = 进程一直活着（停在登录框）→ 没有启动即崩。
+          # 缺平台插件之类的问题会让 Qt 直接 abort，退不出 124。
+          if [ "$code" -ne 124 ]; then
+            echo "::error::进程提前退出（exit=$code）—— 启动阶段就崩了"
+            exit 1
+          fi
+          echo "进程存活满 8 秒 ✅（没有启动即崩）"
+
+          log=$(find "$HOME/.local/share" -name 'app.log' 2>/dev/null | head -1)
+          if [ -z "$log" ]; then
+            echo "::error::找不到应用日志 —— 程序可能没走到日志初始化"
+            exit 1
+          fi
+          echo "应用日志：$log"
+          cat "$log"
+
+          # 内置 3 个 + 从 plugins/protocols/ 加载的外部插件 1 个
+          grep -q "协议就绪：4 个（其中外部插件 1 个）" "$log" \
+            || { echo "::error::协议注册表不对 —— 外部协议插件没被加载"; exit 1; }
+          echo "Linux 上协议插件加载成功 ✅"
+
+          grep -q "应用启动" "$log" \
+            || { echo "::error::日志里没有启动记录"; exit 1; }
+
+      - name: 上传构建日志与运行日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
+          name: logs
+          path: |
+            build.log
+            ${{ github.workspace }}/**/app.log
           if-no-files-found: ignore

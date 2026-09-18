@@ -1,6 +1,9 @@
 # qt-industrial-equipment-monitor
 
 > 基于 Qt/C++ 的工业设备远程监控管理平台 —— 实时数据采集、告警推送、远程控制。
+>
+> 本地开发在 **Windows（MinGW）**，CI 跑在 **Ubuntu** —— 每次推送都会在 Linux 上实测
+> 构建（零警告门槛）、单元测试、以及 offscreen 运行冒烟。
 
 ![CI](https://github.com/Y71jj123/qt-industrial-equipment-monitor/actions/workflows/build.yml/badge.svg)
 ![Qt](https://img.shields.io/badge/Qt-6.x-41CD52?logo=qt&logoColor=white)
@@ -173,27 +176,60 @@ qt-industrial-equipment-monitor/
 
 **环境要求**
 
-- Qt 6.x（需包含 `QtCharts`、`QtSql`，用到 MQTT 再加 `QtMqtt`）
-- CMake >= 3.16，编译器支持 C++17（MSVC 2019+ / GCC 9+）
+- Qt 6.x（`QtCharts` 可选，缺了会自动禁用图表页；`QtSql` 必需）
+- CMake >= 3.16，编译器支持 C++17（GCC 9+ / MSVC 2019+）
 
-**命令行构建**
+### Linux
+
+```bash
+# Ubuntu / Debian：Qt6 + 图表模块 + SQLite 驱动
+sudo apt-get install -y build-essential cmake ninja-build \
+    qt6-base-dev qt6-charts-dev libqt6sql6-sqlite libgl1-mesa-dev
+
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+
+# 运行
+./build/src/qt-industrial-equipment-monitor
+
+# 无显示器的环境（服务器 / 容器 / CI）用 offscreen 平台
+QT_QPA_PLATFORM=offscreen ./build/src/qt-industrial-equipment-monitor
+```
+
+- 图表页是可选依赖：`qt6-charts-dev` 装不上也照样能构建，趋势曲线页自动禁用。
+- 协议插件产物落在 `build/src/plugins/protocols/*.so`，程序启动时自动扫描加载。
+- 数据库与日志默认写到 `~/.local/share/Y71jj123/qt-industrial-equipment-monitor/`。
+
+### Windows
 
 ```bash
 # 1. 配置（把 CMAKE_PREFIX_PATH 换成你的 Qt 安装路径）
-cmake -S . -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.5.3/msvc2019_64"
+cmake -S . -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.11.2/mingw_64"
 
-# 2. 编译
+# 2. 编译（Release 出包 / Debug 调试，预设见 CMakePresets.json）
 cmake --build build --config Release
 
-# 3. 运行（Linux 下无需 --config）
-./build/src/qt-industrial-equipment-monitor
+# 3. 运行
+./build/src/qt-industrial-equipment-monitor.exe
 ```
 
-**Qt Creator**
+### Qt Creator
 
 打开 `CMakeLists.txt` → 选择 Kit → 直接点运行。
 
-**打包成可双击运行的 exe**
+### 跨平台验证状态
+
+| | Windows（本地：MinGW 13.1 + Qt 6.11.2） | Linux（CI：Ubuntu + Qt 6.5.3） |
+| --- | --- | --- |
+| 构建（`-Wall -Wextra` 零警告） | ✅ 本地实测 | ✅ CI 硬门槛 |
+| 单元测试（4 套件 / 38 个用例） | ✅ | ✅ CI 每次推送都跑 |
+| 运行（GUI 起得来 + 协议插件加载） | ✅ 本地实测 | CI offscreen 冒烟（状态看顶部徽章） |
+
+> Linux 那一列全部由 GitHub Actions 实测：构建 → 零警告门槛 → `ctest` → offscreen 运行冒烟
+> （启动存活 + 从日志确认协议插件被加载）。步骤见
+> [`.github/workflows/build.yml`](./.github/workflows/build.yml)，最新状态看顶部 CI 徽章。
+
+**打包成可双击运行的 exe（Windows）**
 
 编译产物默认只依赖 `E:\Qt` 里的 Qt DLL，**直接双击会报"找不到 Qt6Core.dll"**。
 把依赖拷到 exe 旁边即可（做一次就行，`clean` 重建后需要重做）：
