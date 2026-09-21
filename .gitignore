@@ -49,6 +49,10 @@ logs/
 *.sqlite3
 *.db
 
+# ===== Python（模拟器 / 诊断脚本） =====
+__pycache__/
+*.py[cod]
+
 # ===== 本地环境变量 =====
 .env
 

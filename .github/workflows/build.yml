@@ -26,7 +26,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.3'
-          modules: 'qtcharts'
+          modules: 'qtcharts qtserialport'
           cache: true
 
       # Qt Widgets 在 Linux 上要链接 GL；offscreen 平台插件跑界面还需要字体。
@@ -94,9 +94,10 @@ jobs:
           echo "应用日志：$log"
           cat "$log"
 
-          # 内置 3 个 + 从 plugins/protocols/ 加载的外部插件 1 个
-          grep -q "协议就绪：4 个（其中外部插件 1 个）" "$log" \
-            || { echo "::error::协议注册表不对 —— 外部协议插件没被加载"; exit 1; }
+          # 内置 4 个（mock / modbus_tcp / mqtt / modbus_rtu）+ 从 plugins/protocols/ 加载的外部插件 1 个。
+          # 注意：CI 装了 qtserialport 模块，所以 modbus_rtu 会被编进来；没装时总数是 4。
+          grep -q "协议就绪：5 个（其中外部插件 1 个）" "$log" \
+            || { echo "::error::协议注册表不对 —— 外部协议插件没被加载或 RTU 未编入"; exit 1; }
           echo "Linux 上协议插件加载成功 ✅"
 
           grep -q "应用启动" "$log" \

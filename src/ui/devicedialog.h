@@ -54,6 +54,20 @@ private:
     QLineEdit *m_topicEdit = nullptr;
     QLineEdit *m_userEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
+
+    // 串口参数控件（仅 Modbus RTU 这类走串口的协议显示）。
+    // 全部用普通 spinbox / combobox 存 int，不依赖 QSerialPort 类型，
+    // 因此没装 Qt6SerialPort 的构建环境也能正常编译 —— 只是那种环境下 RTU 插件不会注册，
+    // 这些控件永远停在隐藏状态。
+    QSpinBox *m_baudSpin = nullptr;
+    QSpinBox *m_dataBitsSpin = nullptr;
+    QComboBox *m_parityBox = nullptr;
+    QComboBox *m_stopBitsBox = nullptr;
+    QLabel *m_baudLabel = nullptr;
+    QLabel *m_dataBitsLabel = nullptr;
+    QLabel *m_parityLabel = nullptr;
+    QLabel *m_stopBitsLabel = nullptr;
+
     QLabel *m_slaveLabel = nullptr;
     QLabel *m_topicLabel = nullptr;
     QLabel *m_userLabel = nullptr;

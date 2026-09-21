@@ -173,7 +173,11 @@ bool DataStorage::createTables()
                        "  points     TEXT,"
                        "  grp        TEXT,"
                        "  username   TEXT,"
-                       "  password   TEXT"
+                       "  password   TEXT,"
+                       "  baud_rate  INTEGER,"
+                       "  data_bits  INTEGER,"
+                       "  parity     INTEGER,"
+                       "  stop_bits  INTEGER"
                        ")"),
     };
 
@@ -194,6 +198,17 @@ bool DataStorage::createTables()
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("username"), QStringLiteral("TEXT")))
         return false;
     if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("password"), QStringLiteral("TEXT")))
+        return false;
+
+    // Modbus RTU 串口参数：同样是补列升级，老设备补出来是 NULL → 取 DeviceInfo 的默认值
+    // （9600 / 8 / 无校验 / 1 停止位），行为不变。串口参数用普通 int 存，不依赖 QtSerialPort。
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("baud_rate"), QStringLiteral("INTEGER")))
+        return false;
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("data_bits"), QStringLiteral("INTEGER")))
+        return false;
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("parity"), QStringLiteral("INTEGER")))
+        return false;
+    if (!ensureColumn(QStringLiteral("devices"), QStringLiteral("stop_bits"), QStringLiteral("INTEGER")))
         return false;
 
     // 协议插件化：协议从整型枚举换成了字符串 id（外部插件的协议在编译期还不存在，
@@ -810,9 +825,9 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "REPLACE INTO devices (id, name, host, port, slave, protocol, protocol_id, poll_ms,"
-        " mqtt_topic, points, grp, username, password)"
+        " mqtt_topic, points, grp, username, password, baud_rate, data_bits, parity, stop_bits)"
         " VALUES (:id, :name, :host, :port, :slave, :protocol, :protocol_id, :poll, :topic,"
-        " :points, :grp, :user, :pass)"));
+        " :points, :grp, :user, :pass, :baud, :databits, :parity, :stopbits)"));
     query.bindValue(QStringLiteral(":id"), device.id);
     query.bindValue(QStringLiteral(":name"), device.name);
     query.bindValue(QStringLiteral(":host"), device.host);
@@ -829,6 +844,11 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
     query.bindValue(QStringLiteral(":grp"), device.groupName());
     query.bindValue(QStringLiteral(":user"), device.username);
     query.bindValue(QStringLiteral(":pass"), device.password);
+    // 串口参数：Modbus RTU 才用，其它协议写默认值（读回时仍取默认值，行为不变）。
+    query.bindValue(QStringLiteral(":baud"), device.baudRate);
+    query.bindValue(QStringLiteral(":databits"), device.dataBits);
+    query.bindValue(QStringLiteral(":parity"), device.parity);
+    query.bindValue(QStringLiteral(":stopbits"), device.stopBits);
 
     if (!query.exec()) {
         m_lastError = query.lastError().text();
@@ -875,7 +895,7 @@ QList<DeviceInfo> DataStorage::loadDevices() const
     QSqlQuery query(m_db);
     if (!query.exec(QStringLiteral(
             "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points, grp,"
-            " username, password, protocol_id"
+            " username, password, protocol_id, baud_rate, data_bits, parity, stop_bits"
             " FROM devices"))) {
         m_lastError = query.lastError().text();
         return result;
@@ -894,6 +914,13 @@ QList<DeviceInfo> DataStorage::loadDevices() const
         info.group = query.value(9).toString(); // 老库补列后是 NULL → 空串 → 默认分组
         info.username = query.value(10).toString(); // 同上：老库补列后为空 → 匿名接入
         info.password = query.value(11).toString();
+
+        // 串口参数：老库补列后是 NULL → toInt() 落入 0，这里回退到 DeviceInfo 的默认值
+        // （9600 / 8 / 无校验 / 1 停止位），保证老设备、非 RTU 设备读回来仍是合法串口参数。
+        info.baudRate = query.value(13).isNull() ? 9600 : query.value(13).toInt();
+        info.dataBits = query.value(14).isNull() ? 8 : query.value(14).toInt();
+        info.parity = query.value(15).isNull() ? 0 : query.value(15).toInt();
+        info.stopBits = query.value(16).isNull() ? 1 : query.value(16).toInt();
 
         // 协议：优先用字符串 id；老库那行 protocol_id 是 NULL → 按老整型映射一次。
         const QString protocolId = query.value(12).toString();

@@ -67,6 +67,10 @@ QJsonObject deviceToJson(const DeviceInfo &device)
     object.insert(QStringLiteral("mqttTopic"), device.mqttTopic);
     object.insert(QStringLiteral("username"), device.username);
     object.insert(QStringLiteral("password"), device.password);
+    object.insert(QStringLiteral("baudRate"), device.baudRate);
+    object.insert(QStringLiteral("dataBits"), device.dataBits);
+    object.insert(QStringLiteral("parity"), device.parity);
+    object.insert(QStringLiteral("stopBits"), device.stopBits);
     object.insert(QStringLiteral("points"), pointsToJson(device.points));
     return object;
 }
@@ -93,6 +97,10 @@ DeviceInfo deviceFromJson(const QJsonObject &object)
     device.mqttTopic = object.value(QStringLiteral("mqttTopic")).toString();
     device.username = object.value(QStringLiteral("username")).toString();
     device.password = object.value(QStringLiteral("password")).toString();
+    device.baudRate = object.value(QStringLiteral("baudRate")).toInt(9600);
+    device.dataBits = object.value(QStringLiteral("dataBits")).toInt(8);
+    device.parity = object.value(QStringLiteral("parity")).toInt(0);
+    device.stopBits = object.value(QStringLiteral("stopBits")).toInt(1);
     device.points = pointsFromJson(object.value(QStringLiteral("points")).toArray());
 
     // 采集周期 0 会把采集定时器变成忙循环，兜一个下限

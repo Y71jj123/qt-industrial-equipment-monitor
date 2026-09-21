@@ -69,6 +69,17 @@ struct DeviceInfo
     QString username;
     QString password;
 
+    /// 串口参数（仅 Modbus RTU 这类走串口的协议使用，Modbus TCP / MQTT 忽略）。
+    ///
+    /// 刻意用普通 int 而不是 QSerialPort 的枚举：让 DeviceInfo（以及依赖它的
+    /// 配置读写、数据库、设备对话框）都不必引入 Qt6SerialPort 模块 —— 那样串口模块
+    /// 没装的环境（比如本机 Windows 开发机）也能正常编译。RTU 连接对象在 configure()
+    /// 时再把这些 int 翻译成 QSerialPort::Parity 等类型。
+    int baudRate = 9600;  ///< 波特率
+    int dataBits = 8;     ///< 数据位（5~8）
+    int parity = 0;       ///< 校验：0=无 1=奇 2=偶
+    int stopBits = 1;     ///< 停止位（1 或 2）
+
     /// 是否要带账号接入（填了用户名即算）。
     /// 协议该不该显示账号输入框由协议注册表的 ProtocolTraits 决定，
     /// 不在这里按协议名硬判断。

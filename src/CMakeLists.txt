@@ -67,6 +67,15 @@ set(PROJECT_SOURCES
     utils/excelexporter.cpp
 )
 
+# Modbus RTU 串口：仅当 Qt6SerialPort 装上时把源文件登记进 PROJECT_SOURCES。
+# 没装时整段通过 QT_CONFIG(serialport) 守卫被编译器忽略 —— 这里也不登记，
+# 避免链接时出现未定义的 QSerialPort 符号（双重保险）。
+if(Qt${QT_VERSION_MAJOR}SerialPort_FOUND)
+    list(APPEND PROJECT_SOURCES
+        comm/modbusrtuconnection.h
+        comm/modbusrtuconnection.cpp)
+endif()
+
 # ---------------------------------------------------------------------------
 # 核心库：除 main.cpp 外的全部源码。
 #
@@ -90,6 +99,13 @@ target_link_libraries(monitor_core PUBLIC
 if(Qt${QT_VERSION_MAJOR}Charts_FOUND)
     target_link_libraries(monitor_core PUBLIC Qt${QT_VERSION_MAJOR}::Charts)
     target_compile_definitions(monitor_core PUBLIC HAVE_QT_CHARTS)
+endif()
+
+if(Qt${QT_VERSION_MAJOR}SerialPort_FOUND)
+    target_link_libraries(monitor_core PUBLIC Qt${QT_VERSION_MAJOR}::SerialPort)
+    # 给源码一个"串口模块在不在"的判断依据：用 Qt 的 QT_CONFIG(serialport) 在模块缺失时会
+    # 展开成 1/0（未定义特征）直接编译报错，所以这里改用自己的宏，两种环境都安全。
+    target_compile_definitions(monitor_core PUBLIC HAVE_QT_SERIALPORT)
 endif()
 
 if(WIN32)
