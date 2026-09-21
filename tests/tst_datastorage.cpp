@@ -24,6 +24,7 @@ private slots:
     void samplesSpillWhenDatabaseUnavailable();
     void spillReplaysCompletelyAndInOrder();
     void spillSkipsBrokenLines();
+    void dataRetentionPurgeAndDownsample();
 
 private:
     QString dbPath() const { return m_dir.filePath(QStringLiteral("t.db")); }
@@ -299,6 +300,70 @@ void TestDataStorage::spillSkipsBrokenLines()
 
     QCOMPARE(storage.countSamples(wideFrom(), wideTo()), qint64(2));
     QVERIFY2(!QFile::exists(spillPath()), "含坏行的队列文件补传后同样要清理");
+
+    storage.close();
+}
+
+void TestDataStorage::dataRetentionPurgeAndDownsample()
+{
+    DataStorage storage(nullptr, dbPath());
+    QVERIFY(storage.open());
+
+    const QDateTime now = QDateTime::currentDateTime();
+    // 三档数据：刚采的、10 天前（仍在保留期内）、40 天前（过期）
+    storage.insertSample(QStringLiteral("dev-1"), QStringLiteral("t"), 1.0, now);
+    storage.insertSample(QStringLiteral("dev-1"), QStringLiteral("t"), 2.0, now.addDays(-10));
+    storage.insertSample(QStringLiteral("dev-1"), QStringLiteral("t"), 99.0, now.addDays(-40));
+    storage.flush();
+
+    // 保留 30 天 + 开启降采样
+    storage.setRetentionPolicy(30, true, 1);
+    QVERIFY(storage.applyRetentionPolicy());
+
+    // 原始表只剩最近 30 天内的两条（now、now-10d），40 天前的被删
+    QCOMPARE(storage.countSamples(wideFrom(), wideTo()), qint64(2));
+    // 降采样表里应有 1 行（40 天前的那条被聚合成趋势行）
+    QCOMPARE(storage.downsampledRowCount(), qint64(1));
+
+    // 验证降采样行的数值正确（avg/min/max=99，count=1）
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                    QStringLiteral("verify-ds"));
+        db.setDatabaseName(dbPath());
+        bool ok = false;
+        if (db.open()) {
+            QSqlQuery q(db);
+            if (q.exec(QStringLiteral(
+                    "SELECT avg_value, min_value, max_value, sample_count "
+                    "FROM samples_downsampled"))) {
+                ok = q.next();
+                if (ok) {
+                    QCOMPARE(q.value(0).toDouble(), 99.0);
+                    QCOMPARE(q.value(1).toDouble(), 99.0);
+                    QCOMPARE(q.value(2).toDouble(), 99.0);
+                    QCOMPARE(q.value(3).toInt(), 1);
+                }
+            }
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("verify-ds"));
+        QVERIFY2(ok, "降采样行数值/计数应与原数据一致");
+    }
+
+    // 边界：保留期内又插入一条 50 天前的老数据，应在下一次策略执行时被聚合+删除
+    storage.insertSample(QStringLiteral("dev-1"), QStringLiteral("t"), 50.0, now.addDays(-50));
+    storage.flush();
+    QVERIFY(storage.applyRetentionPolicy());
+    QCOMPARE(storage.countSamples(wideFrom(), wideTo()), qint64(2)); // 仍是两条近期
+    QCOMPARE(storage.downsampledRowCount(), qint64(2));              // 多了 50 天那条
+
+    // 关闭降采样：再插入 60 天前的数据，执行策略后只删不聚合
+    storage.setRetentionPolicy(30, false, 1);
+    storage.insertSample(QStringLiteral("dev-1"), QStringLiteral("t"), 60.0, now.addDays(-60));
+    storage.flush();
+    QVERIFY(storage.applyRetentionPolicy());
+    QCOMPARE(storage.countSamples(wideFrom(), wideTo()), qint64(2)); // 仍删掉
+    QCOMPARE(storage.downsampledRowCount(), qint64(2));              // 不增长
 
     storage.close();
 }

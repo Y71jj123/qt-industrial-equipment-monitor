@@ -100,6 +100,10 @@ bool DataStorage::open()
     }
     m_flushTimer->start();
 
+    // 数据保留策略：启动即跑一次（清理历史积压的过期数据），之后每日由定时器执行。
+    startRetentionTimer();
+    applyRetentionPolicy();
+
     Log::info(QStringLiteral("历史数据库已就绪: %1").arg(m_databasePath));
     return true;
 }
@@ -114,6 +118,103 @@ void DataStorage::close()
 
     if (m_db.isOpen())
         m_db.close();
+}
+
+void DataStorage::setRetentionPolicy(int retentionDays, bool downsampleEnabled, int bucketHours)
+{
+    m_retentionDays = std::max(1, retentionDays);
+    m_downsampleEnabled = downsampleEnabled;
+    m_bucketHours = std::max(1, bucketHours);
+}
+
+void DataStorage::startRetentionTimer()
+{
+    if (!m_retentionTimer) {
+        m_retentionTimer = new QTimer(this);
+        m_retentionTimer->setInterval(int(kRetentionCheckIntervalMs));
+        connect(m_retentionTimer, &QTimer::timeout, this, &DataStorage::applyRetentionPolicy);
+    }
+    m_retentionTimer->start();
+}
+
+bool DataStorage::applyRetentionPolicy()
+{
+    if (!m_db.isOpen())
+        return false;
+
+    // 超过这个时间点（对齐到桶边界）的原始采样即视为"过期"。
+    // 对齐是关键：只处理"整个桶都已过期"的数据，避免把一个桶拆成两半 ——
+    // 一半进了降采样表、另一半还留在原始表，会造成半桶丢失或重复计数。
+    const qint64 bucketSeconds = static_cast<qint64>(m_bucketHours) * 3600;
+    const qint64 cutoffSec =
+        QDateTime::currentDateTime().addDays(-m_retentionDays).toSecsSinceEpoch();
+    const qint64 alignedCutoffSec = (cutoffSec / bucketSeconds) * bucketSeconds;
+    const QDateTime alignedCutoff = QDateTime::fromSecsSinceEpoch(alignedCutoffSec);
+
+    // 聚合与删除放进同一个事务，要么都成、要么都不成。
+    if (!m_db.transaction()) {
+        m_lastError = m_db.lastError().text();
+        Log::warn(QStringLiteral("数据保留策略失败（事务开启失败）: %1").arg(m_lastError));
+        return false;
+    }
+
+    bool ok = true;
+    if (m_downsampleEnabled) {
+        // 把过期原始数据按桶聚合进降采样表。
+        // INSERT OR REPLACE + (device, tag, bucket_start) 唯一键 → 幂等：
+        // 每个过期桶只会在"首次完全过期"时聚合一次，聚合后原始行随即被删除，不会重现；
+        // 若期间插入了更老的数据（落在已聚合过的桶里），REPLACE 会用全量数据覆盖，不重复不丢失。
+        QSqlQuery aggregate(m_db);
+        aggregate.prepare(QStringLiteral(
+            "INSERT OR REPLACE INTO samples_downsampled "
+            "(bucket_start, device, tag, avg_value, min_value, max_value, sample_count) "
+            "SELECT datetime((cast(strftime('%s', ts) AS INTEGER) / :bucket) * :bucket, 'unixepoch'), "
+            "       device, tag, AVG(value), MIN(value), MAX(value), COUNT(*) "
+            "FROM samples WHERE ts < :cutoff "
+            "GROUP BY 1, device, tag"));
+        aggregate.bindValue(QStringLiteral(":bucket"), static_cast<qlonglong>(bucketSeconds));
+        aggregate.bindValue(QStringLiteral(":cutoff"), alignedCutoff);
+        if (!aggregate.exec()) {
+            m_lastError = aggregate.lastError().text();
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        QSqlQuery del(m_db);
+        del.prepare(QStringLiteral("DELETE FROM samples WHERE ts < :cutoff"));
+        del.bindValue(QStringLiteral(":cutoff"), alignedCutoff);
+        if (!del.exec()) {
+            m_lastError = del.lastError().text();
+            ok = false;
+        }
+    }
+
+    if (ok && !m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        ok = false;
+    }
+    if (!ok) {
+        m_db.rollback();
+        Log::warn(QStringLiteral("数据保留策略执行失败，已回滚: %1").arg(m_lastError));
+        return false;
+    }
+
+    Log::info(QStringLiteral("数据保留策略：保留近 %1 天，过期原始数据按 %2 小时桶%3清理完成")
+                  .arg(m_retentionDays)
+                  .arg(m_bucketHours)
+                  .arg(m_downsampleEnabled ? QStringLiteral("聚合降级后") : QStringLiteral("（未启用降采样）")));
+    return true;
+}
+
+qint64 DataStorage::downsampledRowCount() const
+{
+    if (!m_db.isOpen())
+        return -1;
+    QSqlQuery query(m_db);
+    if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM samples_downsampled")))
+        return -1;
+    return query.next() ? query.value(0).toLongLong() : -1;
 }
 
 bool DataStorage::isOpen() const
@@ -179,6 +280,21 @@ bool DataStorage::createTables()
                        "  parity     INTEGER,"
                        "  stop_bits  INTEGER"
                        ")"),
+
+        // 降采样表：过期原始数据按时间桶聚合后的"趋势行"。原始表只保留最近 N 天，
+        // 更早的数据一旦整桶过期就被聚合成这里的一行（avg/min/max/计数），既不丢长期趋势也不撑爆磁盘。
+        // UNIQUE(device, tag, bucket_start) 让聚合幂等：同一桶重复跑也不会产生重复行。
+        QStringLiteral("CREATE TABLE IF NOT EXISTS samples_downsampled ("
+                       "  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+                       "  bucket_start DATETIME NOT NULL,"
+                       "  device       TEXT     NOT NULL,"
+                       "  tag          TEXT     NOT NULL,"
+                       "  avg_value    REAL     NOT NULL,"
+                       "  min_value    REAL     NOT NULL,"
+                       "  max_value    REAL     NOT NULL,"
+                       "  sample_count INTEGER  NOT NULL,"
+                       "  UNIQUE(device, tag, bucket_start)"
+                       ")"),
     };
 
     for (const QString &sql : statements) {
@@ -235,6 +351,8 @@ bool DataStorage::createTables()
     // 总览仪表盘要按"时间区间"整体统计（不分设备），上面那条以 device 打头的索引帮不上忙
     query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)"));
     query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_alarms_ts ON alarms(ts)"));
+    query.exec(QStringLiteral(
+        "CREATE INDEX IF NOT EXISTS idx_downsampled_lookup ON samples_downsampled(device, tag, bucket_start)"));
     return true;
 }
 

@@ -79,6 +79,9 @@ public:
     /// 提交间隔（毫秒）：低频采集时靠它保证数据不会在内存里久留。
     static constexpr int kSampleFlushIntervalMs = 200;
 
+    /// 保留策略检查间隔（毫秒）：每日一次。
+    static constexpr qint64 kRetentionCheckIntervalMs = 24LL * 60 * 60 * 1000;
+
     /// 写入一条采样记录。**只入内存队列，不立即落库** ——
     /// 返回值表示"已入队"，真正的落库结果是异步的。
     ///
@@ -165,10 +168,28 @@ public:
     /// 时间区间内的告警条数（含已恢复的）。
     int countAlarms(const QDateTime &from = QDateTime(), const QDateTime &to = QDateTime()) const;
 
+    // ---------------- 数据保留策略 ----------------
+
+    /// 配置数据保留策略。
+    /// @param retentionDays     原始采样只保留最近这么多天（更早的会被聚合后清理）
+    /// @param downsampleEnabled 是否把过期数据按时间桶聚合成趋势行（默认开）
+    /// @param bucketHours       降采样桶粒度（小时），默认 1 小时一个桶
+    void setRetentionPolicy(int retentionDays, bool downsampleEnabled, int bucketHours);
+
+    /// 立即执行一次保留策略：把超过保留期的原始采样按桶聚合进降采样表，再删除原始旧行。
+    /// 返回是否成功，结果会写日志（清理 / 聚合了多少）。建议启动时调一次 + 每日定时调。
+    bool applyRetentionPolicy();
+
+    /// 降采样表里当前的趋势行数（测试 / 界面展示用）。
+    qint64 downsampledRowCount() const;
+
     QString lastError() const;
 
 private:
     bool createTables();
+
+    /// 创建（若不存在）并启动数据保留策略的每日定时器。
+    void startRetentionTimer();
 
     /// 给老库补列（CREATE TABLE IF NOT EXISTS 不会修改已存在的表）。
     /// 列已存在时静默返回 true —— 每次启动都会走一遍，不能刷错误日志。
@@ -199,6 +220,14 @@ private:
     /// 队列 + 定时器都只在 GUI 线程碰，不需要加锁。
     QList<PendingSample> m_pendingSamples;
     QTimer *m_flushTimer = nullptr;
+
+    /// 数据保留策略定时器：每日触发一次 applyRetentionPolicy()。
+    QTimer *m_retentionTimer = nullptr;
+
+    /// 保留策略参数（由 setRetentionPolicy 设置，默认保留 30 天、按 1 小时桶降采样）。
+    int m_retentionDays = 30;
+    bool m_downsampleEnabled = true;
+    int m_bucketHours = 1;
 
     QString m_databasePath;
     /// 采样溢出队列文件：与数据库同目录，文件名派生自数据库名。
