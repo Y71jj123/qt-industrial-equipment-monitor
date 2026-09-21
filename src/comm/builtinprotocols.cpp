@@ -4,6 +4,11 @@
 #include "comm/modbusconnection.h"
 #include "comm/mqttconnection.h"
 
+// Modbus RTU 连接类需要 Qt6SerialPort 模块；没装时整段跳过，主程序照常编译。
+#if defined(HAVE_QT_SERIALPORT)
+#include "comm/modbusrtuconnection.h"
+#endif
+
 namespace {
 
 /// 模拟设备：内置数据发生器，不需要任何网络配置。
@@ -71,6 +76,33 @@ public:
     DeviceConnection *create() const override { return new MqttConnection(); }
 };
 
+#if defined(HAVE_QT_SERIALPORT)
+
+/// Modbus RTU：串口传输层（区别于 TCP 的网口）。
+class ModbusRtuProtocolPlugin : public IProtocolPlugin
+{
+public:
+    QString id() const override { return QStringLiteral("modbus_rtu"); }
+    QString displayName() const override { return QStringLiteral("Modbus RTU"); }
+    quint16 defaultPort() const override { return 0; } // 走串口，没有网络端口
+    QString description() const override
+    {
+        return QStringLiteral("Modbus RTU（串口，默认 9600/8/N/1）：与 Modbus TCP 共用块读逻辑，"
+                              "区别只在传输层走串口 + CRC16 校验。host 字段填串口名"
+                              "（如 /dev/ttyS0、COM3）。");
+    }
+    ProtocolTraits traits() const override
+    {
+        ProtocolTraits traits;
+        traits.usesSlaveId = true;
+        traits.usesSerial = true;
+        return traits;
+    }
+    DeviceConnection *create() const override { return new ModbusRtuConnection(); }
+};
+
+#endif // QT_CONFIG(serialport)
+
 } // namespace
 
 void registerBuiltinProtocols()
@@ -79,4 +111,7 @@ void registerBuiltinProtocols()
     registry.registerPlugin(new MockProtocolPlugin);
     registry.registerPlugin(new ModbusTcpProtocolPlugin);
     registry.registerPlugin(new MqttProtocolPlugin);
+#if defined(HAVE_QT_SERIALPORT)
+    registry.registerPlugin(new ModbusRtuProtocolPlugin);
+#endif
 }

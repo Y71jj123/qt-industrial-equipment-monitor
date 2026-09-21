@@ -86,6 +86,19 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
      不能写 `disposition` 的默认值 0（那是"已处理恢复"）—— 否则报表会把未处理告警算成已处理。
      判断"是否处理过"**永远以 `handled_at` 是否有效为准**，不要看 disposition 的值。
 
+6. **Modbus RTU 收帧必须按"应答自带的字节数"定长，不能按请求反推** ——
+   读寄存器 FC03/04 应答是 `5 + 2×数量`，**读线圈 FC01/02 是 `5 + ⌈数量/8⌉`**，异常应答固定 5 字节。
+   按请求反推会把线圈应答多算 1 个字节 → 永远凑不满帧长 → 等满超时抛 `QSerialPort::TimeoutError`
+   （日志表现为 `Modbus RTU 串口错误: Operation timed out`）→ 判离线 → 重连 → 死循环。
+   **TCP 侧靠 MBAP 头的长度字段收帧，所以这个 bug 只在 RTU 暴露**；
+   而默认点位表里「运行状态」恰好是线圈，`modbus::runPoll()` 每轮必发一帧 FC01，所以一联调就中。
+7. **`QSerialPort` 在 Linux 上会 `ioctl(TIOCEXCL)` 独占串口** ——
+   一个进程连过 `/tmp/ttyS0` 之后，同一对 socat 上的其他客户端 open 会直接 `EBUSY`，
+   而且这个排他标志会**残留到 socat 重启为止**。所以想换客户端（探针 ↔ Qt 程序）必须先重起 socat，
+   并且串口验证顺序固定为 **socat → 从站模拟器 → 探针 → Qt 程序**。
+   另：Windows 本机 Qt 没装 SerialPort 模块，`modbusrtuconnection.cpp` **在 Windows 上不参与编译**，
+   "本机零警告"不构成 RTU 代码的验证，必须回虚拟机/CI 重建。
+
 ## 协议插件（P1-1）
 
 架构一句话：**协议是数据，不是代码分支**。协议 id → 插件的映射放在 `ProtocolRegistry`，

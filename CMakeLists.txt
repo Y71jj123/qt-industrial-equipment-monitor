@@ -29,6 +29,11 @@ find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Charts QUIET)
 # Qt Test is optional too: 没有它只是不能跑单元测试，不影响出包。
 find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Test QUIET)
 
+# Qt SerialPort is optional: Modbus RTU 走串口需要它。没装时整个 RTU 连接类
+# （comm/modbusrtuconnection.*）因 QT_CONFIG(serialport) 守卫不进入编译，
+# 主程序照常构建，只是不会出现 "Modbus RTU" 这个协议选项。
+find_package(Qt${QT_VERSION_MAJOR} COMPONENTS SerialPort QUIET)
+
 message(STATUS "Qt version   : ${QT_VERSION_MAJOR} (${Qt${QT_VERSION_MAJOR}_VERSION})")
 if(Qt${QT_VERSION_MAJOR}Charts_FOUND)
     message(STATUS "Qt Charts    : found")
@@ -39,6 +44,11 @@ if(Qt${QT_VERSION_MAJOR}Test_FOUND)
     message(STATUS "Qt Test      : found (unit tests enabled)")
 else()
     message(STATUS "Qt Test      : NOT found (unit tests disabled)")
+endif()
+if(Qt${QT_VERSION_MAJOR}SerialPort_FOUND)
+    message(STATUS "Qt SerialPort: found (Modbus RTU enabled)")
+else()
+    message(STATUS "Qt SerialPort: NOT found (Modbus RTU disabled)")
 endif()
 
 # 源码根目录：协议插件（plugins/）与性能夹具（tools/bench）都要用它做 include 路径。

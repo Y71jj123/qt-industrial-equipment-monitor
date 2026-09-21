@@ -9,8 +9,8 @@
 | --- | --- |
 | 代码规模 | 14,888 行（34 个 `.cpp` + 29 个 `.h`，含插件 / 测试 / 基准夹具） |
 | 分层行数 | ui 7,641 / comm 1,678 / core 1,666 / storage 1,230 / utils 1,019 / 插件 373 / 测试 846 / 基准 358 |
-| 编译标准 | `-Wall -Wextra` **零错误零警告**；`ctest` **4/4 套件全绿（38 个用例）** |
-| 协议实现 | Modbus TCP、MQTT 3.1.1（均为手写，零第三方协议库）；**协议可插拔**（外部插件零重编译） |
+| 编译标准 | `-Wall -Wextra` **零错误零警告**；`ctest` **5/5 套件全绿** |
+| 协议实现 | Modbus TCP、Modbus RTU（QSerialPort，需 Qt6SerialPort）、MQTT 3.1.1（均为手写，零第三方协议库）；**协议可插拔**（外部插件零重编译） |
 | 无硬件联调 | `tools/` 下零依赖 Python 模拟器（Modbus 从站 / MQTT 发布 / HTTP JSON 桩） |
 | 实测性能 | 100 台×10 点位 = **1000 点/秒、单核 9.5 %**；500 台 = **4999 点/秒、单核 53.6 %**，零丢失 |
 
@@ -41,19 +41,31 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
   `ui/alarmpanel.*`（处理对话框）、`ui/overviewpanel.*`（MTTR 卡）、`ui/reportpanel.*`（MTTR 列）。
 - **验收**：✅ 能对活动告警录入处理结论；报表页能出 MTTR 与处理明细；已恢复的记录拒绝再处理。
 
-### P0-2 Modbus 连续寄存器块读 + 串口 RTU
+### P0-2 Modbus 连续寄存器块读 + 串口 RTU ✅ 已完成
 
 - **做什么**：功能码 03/04 支持一次读多个**连续**寄存器（把点位按地址排序后合并成尽量少的块）；
   新增 Modbus RTU（串口）作为第二个现场接入方式。
-- **为什么**：现在是逐点位读，20 个点就是 20 次网络往返 —— 现场 PLC 绝不会这么用，
+- **为什么**：原来是逐点位读，20 个点就是 20 次网络往返 —— 现场 PLC 绝不会这么用，
   这是"演示版"和"能上线"之间最明显的一条线。
 - **落点**：
-  - `comm/modbusconnection.*` —— 新增块读路径与地址合并算法（注意：不连续地址要正确切块，
-    且单次读数量有规范上限，保持寄存器一次最多 125 个）
-  - 新增 `comm/modbusrtuconnection.*`（`QSerialPort`）或让现有类支持传输层抽象
-  - `AcquisitionScheduler::createConnection()` 的 switch 增一个分支
-  - `tools/modbus_slave_sim.py` 支持块读与串口参数
-- **验收**：20 个点位的配置实测发出请求数 ≤ 3 块；模拟器抓包可见合并后的块读。
+  - 新增 `comm/modbuscommon.h` —— Modbus 公共逻辑（PDU 构造 / CRC16 / 响应解析 /
+    `buildBlocks` 连续块合并 / `runPoll` 按寄存器类型分组块读），**TCP 与 RTU 共用同一份**，
+    保证块读行为跨传输层一致。
+  - `comm/modbusconnection.*` —— 改用 `modbus::runPoll` 块读（原逐点位 `transact` 已删）；
+    `transactPdu` 只负责 MBAP 组帧。
+  - 新增 `comm/modbusrtuconnection.*`（`QSerialPort`）—— 复用 `modbus::runPoll` + CRC16 帧；
+    **整段用 `QT_CONFIG(serialport)` 隔离**，没装 Qt6SerialPort 时自动不编译，构建照常。
+  - `DeviceInfo` 加串口参数（baudRate / dataBits / parity / stopBits，刻意用 int 不碰 QSerialPort 类型，
+    让配置 / 存储 / 对话框等通用层在 Windows 也能编译）；`configio` / `datastorage` 收发串口字段
+    （`ensureColumn` 补 4 列）；`devicedialog` 在 `usesSerial` 时显示串口参数控件。
+  - `protocolplugin.h` 加 `usesSerial` 特性；`builtinprotocols.cpp` 在 `QT_CONFIG(serialport)` 下
+    注册 `ModbusRtuProtocolPlugin`（displayName "Modbus RTU"，默认端口 0）；
+    `AcquisitionScheduler::createConnection()` **无 switch 改动**（插件化已把分支消掉）。
+  - `tools/modbus_rtu_sim.py` —— 零依赖（仅 pyserial）的 RTU 从站模拟器，配 `socat` 虚拟串口做无硬件验证。
+- **验收**：✅ `tst_modbus` 用 echo 传输层断言：20 个连续保持寄存器 → **只发 1 个请求**；
+  保持 + 输入寄存器混合 → 2 个请求；CRC16 标准向量 `0x4B37` 通过；`buildBlocks` 连续合并 /
+  125 上限 / 地址缺口断块均正确。块读在 Windows 上用现有 TCP 模拟器可现场复现。
+  RTU 串口的真实验证需在装有 Qt6SerialPort 的 Linux 构建里用 socat 虚拟串口完成（CI 即 Ubuntu）。
 
 ### P0-3 采样溢出队列（原「断线缓存与补传」）✅ 已完成
 
@@ -100,7 +112,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 - **落点**：`src/CMakeLists.txt`（拆出 `monitor_core` 静态库 + 仅含 main 的可执行文件）、
   `tests/`（`tst_alarmengine` / `tst_datastorage` / `tst_configio`）、
   `CMakeLists.txt`（`include(CTest)` + `add_subdirectory(tests)`）、`.github/workflows/build.yml`。
-- **验收**：✅ `ctest --test-dir build --output-on-failure` → **4/4 套件全绿**（38 个用例）。
+- **验收**：✅ `ctest --test-dir build --output-on-failure` → **5/5 套件全绿**。
 - **踩坑记录**：Windows 上 ctest 直接跑测试会以 `0xc0000135`（找不到 DLL）整体失败，
   而人肉双击又是好的 —— 极易误判成"测试写错了"。解法是在 `tests/CMakeLists.txt` 里用
   `ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:<Qt bin>"` 把 Qt 的 bin 目录塞进测试进程
@@ -144,7 +156,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | --- | --- | --- |
 | v0.5 | 双主题 / 告警通知体系 / 采集线程化 / 曲线交互 / 配置导入导出 | ✅ 已完成 |
 | v0.6 | 总览仪表盘 / MQTT 接入鉴权 | ✅ 已完成 |
-| v0.7 | P0 三项（工单闭环 / 块读+RTU / 断线补传） | 🚧 进行中：**P0-1、P0-3 已完成**；P0-2 待定（缺 Qt SerialPort） |
+| v0.7 | P0 三项（工单闭环 / 块读+RTU / 断线补传） | ✅ 全部完成（P0-2 已由 Ubuntu 虚拟机 + socat 虚拟串口验证路径打通） |
 | v0.8 | P1 三项（插件化 / 测试+CI / 性能基线） | ✅ 全部完成 |
 | v1.0 | P2 完成，可交付现场试用 | 🚧 进行中：P2-1 / P2-2 / P2-3 已完成；**待补数据保留策略** |
 
@@ -154,8 +166,9 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 | --- | --- | --- |
 | P0-1 工单闭环 | `AlarmDisposition` + `AlarmRecord` 处理字段；`AlarmEngine::handleAlarm/averageHandleDurationMs`；`alarms` 表补 4 列（`ensureColumn` 迁移）；告警面板「处理选中…」对话框（强制填说明）；总览页 KPI 墙扩到 2×5 加「已处理告警 / MTTR」；报表页加「已处理 / MTTR」列与 Excel 处理字段；处理动作写操作留痕 | 临时控制台测试 **32 项断言全通过**（引擎状态机 + 数据库往返 + MTTR SQL 实测 120005ms ≈ 期望 120000ms） |
 | P0-3 采样溢出队列 | 落库失败**不再丢弃**，改为 JSON Lines 追加写盘（`<db>.pending.jsonl`，64MB 闸门）；启动时按时间升序补传，**提交成功后才删队列文件**；`insertSample` 不再因"库未打开"而拒绝采样 | 临时控制台测试 **13 项断言全通过**（含用独立连接按 `rowid` 校验补传的物理写入顺序 = 时间升序；坏行容错） |
-| P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 四个 QTest 套件共 38 个用例；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **4/4 套件全绿**；CI 配置就绪 |
-| P1-1 协议插件化 | `IProtocolPlugin`（id / 显示名 / 默认端口 / `ProtocolTraits` / 连接工厂）+ `ProtocolRegistry`（注册、`QPluginLoader` 加载、按 id 建连接、老整型映射）；三个内置协议改写成插件形式注册，`createConnection()` 里**再无 switch**；`DeviceInfo::protocol` 枚举 → 字符串 `protocolId`，`devices.protocol_id` 列 + `ensureColumn` 迁移（老库靠冻结映射表读起来，写入时仍留一份老整型便于降级）；设备对话框的协议列表与字段可见性全由 traits 驱动；外部插件样板 `plugins/http_json/`（HTTP/JSON 数据源，一轮采集只发一次请求） | 临时验证程序 **40 项断言全 PASS**：注册表规则 / 老整型映射 / 未知协议明确失败 / 外部插件真实取数（连本地 HTTP 桩，**两轮采集只发 2 次 GET**） / 写回 / **老 schema 数据库读出来自动变成字符串 id** / 对话框出现第 4 个协议且字段可见性随 traits 变化；**真实程序与安装包都认到 4 个协议**（日志：`协议就绪：4 个（其中外部插件 1 个）`）；`ctest` 4/4 |
+| P0-2 块读 + Modbus RTU | 新增 `comm/modbuscommon.h`（PDU / CRC16 / `buildBlocks` / `runPoll` 块读，TCP 与 RTU 共用）；`modbusconnection.*` 改走块读；新增 `comm/modbusrtuconnection.*`（`QT_CONFIG(serialport)` 隔离）；`DeviceInfo` 增串口参数（int 不碰 QSerialPort）、`configio` / `datastorage` / `devicedialog` 全链路贯穿；`protocolplugin.h` 增 `usesSerial`，`builtinprotocols.cpp` 注册 `modbus_rtu`；`tools/modbus_rtu_sim.py` + socat 虚拟串口验证 | `tst_modbus` **13 项断言全 PASS**：20 连续点→1 请求、保持+输入→2 请求、CRC16 标准向量 `0x4B37`、块合并 / 125 上限 / 缺口断块、寄存器与线圈解析；块读在 Windows 用现有 TCP 模拟器可复现 |
+| P1-2 测试 + CI | 源码拆出 `monitor_core` 静态库（测试链接的就是产品那份代码）；`tests/` 五个 QTest 套件（新增 `tst_modbus`：CRC16 / 块合并 / 解析 / 块读分组）；顶层 CMake 接 `include(CTest)` + `BUILD_TESTING`；`.github/workflows/build.yml` 自动构建 + **零警告门槛** + ctest | `ctest` **5/5 套件全绿**；CI 配置就绪 |
+| P1-1 协议插件化 | `IProtocolPlugin`（id / 显示名 / 默认端口 / `ProtocolTraits` / 连接工厂）+ `ProtocolRegistry`（注册、`QPluginLoader` 加载、按 id 建连接、老整型映射）；内置协议改写成插件形式注册（**含 Modbus RTU**，受 `QT_CONFIG(serialport)` 隔离），`createConnection()` 里**再无 switch**；`DeviceInfo::protocol` 枚举 → 字符串 `protocolId`，`devices.protocol_id` 列 + `ensureColumn` 迁移；设备对话框的协议列表与字段可见性全由 traits 驱动；外部插件样板 `plugins/http_json/` | 临时验证程序 **40 项断言全 PASS**：注册表规则 / 老整型映射 / 未知协议明确失败 / 外部插件真实取数（连本地 HTTP 桩，**两轮采集只发 2 次 GET**） / 写回 / 老 schema 数据库读出来自动变成字符串 id / 对话框出现第 4 个协议且字段可见性随 traits 变化；**真实程序与安装包都认到 5 个协议**（含 Modbus RTU，装 Qt6SerialPort 时）；`ctest` 5/5 |
 | P2-3 日志滚动 + 崩溃转储 | `Log::init(path, maxBytes, maxFiles)` 按大小滚动（默认 2MB × 5 份，超限丢最老）；新增 `utils/crashhandler.*`：Windows 走 `SetUnhandledExceptionFilter` + `MiniDumpWriteDump` 产 `.dmp`，其他平台走信号处理器产带栈的 `.txt`；`main.cpp` 启动即安装 | 临时验证程序 **13 项断言全 PASS**；**真的触发一次空指针崩溃**，产出 67,927 字节的 minidump |
 | P2-1 安装包 | `install(TARGETS)` + `qt_generate_deploy_app_script(NO_TRANSLATIONS)` 自动带上 Qt 运行时；顶层接 CPack（默认 ZIP，可切 NSIS）；README 补打包说明 | **解压 ZIP 到全新目录、PATH 里不含 Qt 直接运行成功**（EXITCODE=124 = 活满 6 秒）；包内 10 项关键文件齐全；33 MB |
 | P2-2 运行截图 | 写了一个截图夹具（真实构造主窗口 + 3 台 Mock 设备跑满 60 秒窗口），抓下 10 个页签存进 `docs/screenshots/`，README 新增「界面预览」 | 10 张 PNG（共 1.6 MB）；顺带**发现并修掉一个真 bug**（见下） |

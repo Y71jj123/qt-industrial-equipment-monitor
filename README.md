@@ -69,7 +69,7 @@
 | 界面框架 | Qt 6.x（Qt Widgets 为主，复杂交互页面可选 QML） |
 | 语言标准 | C++17 |
 | 构建 | CMake（>= 3.16），兼容 Qt Creator 直接打开 |
-| 通信 | Modbus TCP（QTcpSocket 手写 MBAP + PDU）、MQTT 3.1.1（QTcpSocket 手写最小子集）、模拟数据源 |
+| 通信 | Modbus TCP（QTcpSocket 手写 MBAP + PDU）、**Modbus RTU（QSerialPort + CRC16 校验）**、MQTT 3.1.1（QTcpSocket 手写最小子集）、模拟数据源 |
 | 数据可视化 | Qt Charts |
 | 数据存储 | SQLite（Qt SQL），服务端场景可切 MySQL |
 | 并发 | QThread / QThreadPool + 信号槽跨线程通信，采集线程与 UI 线程解耦 |
@@ -163,9 +163,11 @@ qt-industrial-equipment-monitor/
     │   ├── deviceconnection.h  协议抽象接口（含 configure 入口）
     │   ├── protocolplugin.h    **协议插件接口**（元数据 + traits + 连接工厂）
     │   ├── protocolregistry.*  协议注册表：协议 id → 插件（内置与外部插件一视同仁）
-    │   ├── builtinprotocols.cpp 三个内置协议以插件形式注册（mock / modbus_tcp / mqtt）
+    │   ├── builtinprotocols.cpp 内置协议以插件形式注册（mock / modbus_tcp / mqtt / modbus_rtu，最后一项需 Qt6SerialPort）
     │   ├── mockconnection.*    模拟数据源
     │   ├── modbusconnection.*  Modbus TCP（手写 MBAP / PDU）
+    │   ├── modbusrtuconnection.* Modbus RTU（QSerialPort + CRC16，QT_CONFIG(serialport) 隔离）
+    │   ├── modbuscommon.h      Modbus 公共逻辑（PDU / CRC16 / 块读合并，TCP 与 RTU 共用）
     │   └── mqttconnection.*    MQTT 3.1.1（手写最小子集）
     ├── core/               # 设备模型、采集调度（线程化 + 自动重连）、告警引擎
     ├── storage/            # SQLite：采样 / 告警 / 操作 / 设备台账（批量写入）
@@ -179,17 +181,31 @@ qt-industrial-equipment-monitor/
 - Qt 6.x（`QtCharts` 可选，缺了会自动禁用图表页；`QtSql` 必需）
 - CMake >= 3.16，编译器支持 C++17（GCC 9+ / MSVC 2019+）
 
-### Linux
+### Linux（Ubuntu / Debian）
+
+**最简做法：一条命令跑完"装依赖 → 构建 → 测试 → 冒烟"**（推荐在虚拟机里用这个）：
 
 ```bash
-# Ubuntu / Debian：Qt6 + 图表模块 + SQLite 驱动
+chmod +x build_on_ubuntu.sh
+./build_on_ubuntu.sh             # Debug + 测试 + offscreen 冒烟
+# ./build_on_ubuntu.sh --release # 出包 / 跑性能基线用 Release
+```
+
+脚本会自动探测 Qt（发行版 `qt6-base-dev` 或你用 `QT6_PREFIX=...` 指定的安装器目录），
+两种来源都支持。想看它每一步干了什么，直接读 [`build_on_ubuntu.sh`](./build_on_ubuntu.sh)。
+
+如果只想手动装依赖、自己控制 cmake 参数，等价命令是：
+
+```bash
+# Ubuntu / Debian：Qt6 + 图表模块 + 构建工具
 sudo apt-get install -y build-essential cmake ninja-build \
-    qt6-base-dev qt6-charts-dev libqt6sql6-sqlite libgl1-mesa-dev
+    qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-charts-dev \
+    libgl1-mesa-dev libopengl0
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 
-# 运行
+# 运行（有显示器）
 ./build/src/qt-industrial-equipment-monitor
 
 # 无显示器的环境（服务器 / 容器 / CI）用 offscreen 平台
@@ -199,6 +215,9 @@ QT_QPA_PLATFORM=offscreen ./build/src/qt-industrial-equipment-monitor
 - 图表页是可选依赖：`qt6-charts-dev` 装不上也照样能构建，趋势曲线页自动禁用。
 - 协议插件产物落在 `build/src/plugins/protocols/*.so`，程序启动时自动扫描加载。
 - 数据库与日志默认写到 `~/.local/share/Y71jj123/qt-industrial-equipment-monitor/`。
+- **Modbus RTU（串口）**：构建前补一个包 `sudo apt install qt6-serialport-dev` 即可启用
+  （`build_on_ubuntu.sh` 已包含这个依赖）。没有它时 RTU 连接类因 `HAVE_QT_SERIALPORT` 宏守卫
+  自动不编译，主程序照常构建，只是设备协议下拉里没有 "Modbus RTU" 这一项。
 
 ### Windows
 
@@ -222,7 +241,7 @@ cmake --build build --config Release
 | | Windows（本地：MinGW 13.1 + Qt 6.11.2） | Linux（CI：Ubuntu + Qt 6.5.3） |
 | --- | --- | --- |
 | 构建（`-Wall -Wextra` 零警告） | ✅ 本地实测 | ✅ CI 硬门槛 |
-| 单元测试（4 套件 / 38 个用例） | ✅ | ✅ CI 每次推送都跑 |
+| 单元测试（5 套件：告警 / 存储 / 配置 / 协议注册表 / Modbus 块读） | ✅ | ✅ CI 每次推送都跑 |
 | 运行（GUI 起得来 + 协议插件加载） | ✅ 本地实测 | CI offscreen 冒烟（状态看顶部徽章） |
 
 > Linux 那一列全部由 GitHub Actions 实测：构建 → 零警告门槛 → `ctest` → offscreen 运行冒烟
@@ -276,15 +295,17 @@ qt-industrial-equipment-monitor-<版本>-win64/
 
 **跑单元测试**
 
-核心逻辑（告警引擎、存储、配置、协议组包）有 QTest 覆盖，一条命令跑完：
+核心逻辑（告警引擎、存储、配置、协议组包、Modbus 块读与 CRC）有 QTest 覆盖，一条命令跑完：
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-当前三个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR 分级）、
+当前五个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR 分级）、
 `tst_datastorage`（告警落库与 NULL 语义 / 统计口径 / 采样溢出队列与补传顺序）、
-`tst_configio`（点位表与整份配置往返，含 MQTT 账号）。
+`tst_configio`（点位表与整份配置往返，含 MQTT 账号）、
+`tst_protocolregistry`（协议注册 / 插件发现 / 遗留枚举迁移）、
+`tst_modbus`（CRC16 标准向量 / 连续块合并 / 寄存器与线圈解析 / 块读分组与请求次数）。
 
 > 测试链接的是 `monitor_core` 静态库 —— 也就是主程序实际用的那份代码，
 > 不是把源码再编译一遍的"影子实现"。CI 里还会把编译警告视为失败。
@@ -340,6 +361,49 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 
 > 这两个脚本同时也是**协议格式的活文档** —— 想知道项目期望什么报文，看它们即可。
 > MQTT 鉴权采用 3.1.1 的明文 User Name / Password 字段，不加密时等同于明文口令，仅适合内网环境。
+
+### 三、Modbus RTU：用虚拟串口联调（无需真实硬件）
+
+Modbus RTU 走串口。没真 PLC 时，用 `socat` 在 Linux（或你的 Ubuntu 虚拟机）里造一对
+"软串口"，一头跑模拟器、一头接软件，就能把 RTU 链路完整跑通。
+
+```bash
+# 1) 造一对互联的虚拟串口（/tmp/ttyS0 ↔ /tmp/ttyS1）
+#    socat / python3-serial 已被 build_on_ubuntu.sh 一次性装好；
+#    若你是手动联调（没跑脚本），才需要下面这行：
+sudo apt install -y socat python3-serial
+
+# ⚠️ PTY,raw,echo=0 这三个修饰词一个都不能省：
+#    不加 raw  → 串口走行规程，二进制报文里的 0x0A/0x0D 会被改写；
+#    不加 echo=0 → 你发什么它回什么，客户端收到的是自己发的请求，解析必然错位。
+#    不要加 &（前台运行）：-d -d 会打印 ←→ 数据流，能当场确认两端互通；
+#    确实要后台跑再自行补 &。
+socat -d -d PTY,raw,echo=0,link=/tmp/ttyS0 PTY,raw,echo=0,link=/tmp/ttyS1
+
+# 2) 在 /tmp/ttyS1 上跑 RTU 从站模拟器（从站 1，9600/8/N/1）
+python3 tools/modbus_rtu_sim.py /tmp/ttyS1 9600 8 N 1
+```
+
+> 依赖用 `apt install python3-serial` 装，**不要 `pip install pyserial`**：Ubuntu 24.04 起
+> `pip` 受 PEP 668 保护，直接装会报 `externally-managed-environment`。
+> 一定要用 pip 的话加 `--break-system-packages`，但不推荐。
+
+然后在客户端「添加设备」里填：
+
+| 字段 | 值 |
+| --- | --- |
+| 协议 | `Modbus RTU`（装了 `qt6-serialport-dev` 才会出现） |
+| 地址 / 主机 | `/tmp/ttyS0`（串口名；Windows 上形如 `COM3`） |
+| 端口 | 留空（串口没有网络端口） |
+| 从站地址 | `1` |
+| 波特率 / 数据位 / 校验 / 停止位 | `9600 / 8 / 无 / 1`（与模拟器一致） |
+| 点位表「缩放」 | **全部改成 `0.01`** |
+
+模拟器把寄存器地址原样当值返回（地址 100 读回来就是 100），方便核对"点位 X 读回来就是 X"。
+寄存器映射沿用 TCP 模拟器的约定：`0=温度 1=压力 2=转速 3=运行状态 4=振动`，存的仍是「工程值 × 100」。
+
+> Windows 上没装 Qt6SerialPort 时，构建里不会有 "Modbus RTU" 这一项 —— 这是设计内的隔离，
+> 不是 bug。RTU 的真实验证请在装有串口模块的 Linux 构建里跑（CI 也是 Ubuntu）。
 
 ## 新增一种协议要写多少东西
 
@@ -461,7 +525,7 @@ MinGW 13.1 + Qt 6.11.2 / **Release 构建**（`cmake --preset qt-mingw-release`�
 - [x] v0.4 报表导出与运维统计
 - [x] v0.5 体验升级：双主题视觉、告警通知体系、采集线程化、曲线交互、配置导入导出、Excel 报表
 - [x] v0.6 总览仪表盘（KPI 墙 + 设备状态卡 + 下钻）、MQTT 接入鉴权（CONNECT 账号字段 + 拒绝原因可读）
-- [ ] v0.7 业务闭环：告警工单与 MTTR（✅ 已完成）、断线补传与数据不丢（✅ 已完成）、Modbus 块读 + 串口 RTU
+- [x] v0.7 业务闭环：告警工单与 MTTR（✅）、断线补传与数据不丢（✅）、Modbus 块读 + 串口 RTU（✅）
 - [x] v0.8 技术深度：协议插件化（✅）、单元测试 + CI（✅）、性能基线报告（✅）
 - [x] v1.0 产品化：安装包（✅）、运行截图（✅）、日志滚动与崩溃转储（✅）
 

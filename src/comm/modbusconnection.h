@@ -41,13 +41,12 @@ public:
     void setTimeoutMs(int ms) { m_timeoutMs = qMax(50, ms); }
 
 private:
-    /// 发一帧请求并读回响应 PDU（已剥离 MBAP 头、已判异常码）。
-    bool transact(int function, quint16 address, quint16 payload, QByteArray &pduOut);
+    /// 发一个 PDU（功能码 + 参数，不含 MBAP 头）并读回响应 PDU（已剥离 MBAP 头、已判异常码）。
+    /// 块读与单点读都走这里，区别只是传入的 PDU 是"读一个寄存器"还是"读一整块"。
+    bool transactPdu(quint8 function, const QByteArray &requestPdu, QByteArray &responsePduOut);
 
-    /// 读一个点位（按 registerType 选功能码），成功时把工程值写入 value。
-    bool readPoint(const TagPoint &point, double &value);
-
-    /// 轮询定时器回调：逐点位读取并上报。
+    /// 轮询定时器回调：按寄存器类型分组、合并连续地址成块、每块一次读、解析后上报。
+    /// 块读逻辑在 modbus::runPoll 里，TCP 与 RTU 共用，保证行为一致。
     void poll();
 
     QTcpSocket *m_socket = nullptr;

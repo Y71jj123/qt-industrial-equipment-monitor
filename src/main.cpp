@@ -33,7 +33,8 @@ int main(int argc, char *argv[])
     CrashHandler::install(QDir(dataDir).filePath(QStringLiteral("dumps")));
     Log::info(QStringLiteral("崩溃转储目录：%1").arg(CrashHandler::dumpDirectory()));
 
-    // 协议：先注册编译进主程序的三个内置协议，再扫描外部插件目录。
+    // 协议：先注册编译进主程序的内置协议（mock / modbus_tcp / mqtt / modbus_rtu），
+    // 再扫描外部插件目录。
     // 必须赶在任何设备开始采集之前完成 —— 采集调度器建连接时只会问注册表，
     // 这一步漏了，设备会因为"协议不可用"起不来。
     registerBuiltinProtocols();

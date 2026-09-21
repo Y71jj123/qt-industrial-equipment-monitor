@@ -23,6 +23,13 @@ struct ProtocolTraits
     /// 这类"协议自己才解释得清的字符串"再多几种，也不会让 devices 表长出一堆空列。
     bool usesEndpoint = false;
 
+    /// 需要串口参数（波特率 / 数据位 / 校验 / 停止位）。
+    ///
+    /// 只有走串口的协议（Modbus RTU）才置 true；设备对话框据此显示串口参数控件。
+    /// 串口模块（Qt6SerialPort）不一定装在所有构建环境里，对话框里这个控件用
+    /// `QT_CONFIG(serialport)` 隔离，没装时整段不出现 —— 与连接层的隔离保持一致。
+    bool usesSerial = false;
+
     /// 该字段在界面上的叫法。为空时用「订阅主题」。
     QString endpointLabel;
 };

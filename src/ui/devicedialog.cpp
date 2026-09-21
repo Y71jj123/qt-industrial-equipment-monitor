@@ -73,6 +73,22 @@ void DeviceDialog::setupUi()
     m_passwordEdit->setEchoMode(QLineEdit::Password);
     m_passwordEdit->setPlaceholderText(QStringLiteral("留空 = 不发送密码"));
 
+    m_baudSpin = new QSpinBox(this);
+    m_baudSpin->setRange(300, 115200);
+    m_baudSpin->setValue(9600);
+    // 工业现场常见波特率直接敲也行，加几个快捷档位省事。
+    m_baudSpin->setStepType(QSpinBox::AdaptiveDecimalStepType);
+    m_dataBitsSpin = new QSpinBox(this);
+    m_dataBitsSpin->setRange(5, 8);
+    m_dataBitsSpin->setValue(8);
+    m_parityBox = new QComboBox(this);
+    m_parityBox->addItem(QStringLiteral("无 (N)"), 0);
+    m_parityBox->addItem(QStringLiteral("奇 (O)"), 1);
+    m_parityBox->addItem(QStringLiteral("偶 (E)"), 2);
+    m_stopBitsBox = new QComboBox(this);
+    m_stopBitsBox->addItem(QStringLiteral("1"), 1);
+    m_stopBitsBox->addItem(QStringLiteral("2"), 2);
+
     m_slaveLabel = new QLabel(QStringLiteral("从站地址"), this);
     m_topicLabel = new QLabel(QStringLiteral("订阅主题"), this);
     m_userLabel = new QLabel(QStringLiteral("接入账号"), this);
@@ -81,6 +97,10 @@ void DeviceDialog::setupUi()
     // 只留一个孤零零的输入框在那儿很费解。
     m_hostLabel = new QLabel(QStringLiteral("地址 / 主机"), this);
     m_portLabel = new QLabel(QStringLiteral("端口"), this);
+    m_baudLabel = new QLabel(QStringLiteral("波特率"), this);
+    m_dataBitsLabel = new QLabel(QStringLiteral("数据位"), this);
+    m_parityLabel = new QLabel(QStringLiteral("校验位"), this);
+    m_stopBitsLabel = new QLabel(QStringLiteral("停止位"), this);
 
     m_hintLabel = new QLabel(this);
     m_hintLabel->setObjectName(QStringLiteral("panelHint"));
@@ -96,6 +116,10 @@ void DeviceDialog::setupUi()
     form->addRow(m_userLabel, m_userEdit);
     form->addRow(m_passwordLabel, m_passwordEdit);
     form->addRow(QStringLiteral("采集周期"), m_intervalSpin);
+    form->addRow(m_baudLabel, m_baudSpin);
+    form->addRow(m_dataBitsLabel, m_dataBitsSpin);
+    form->addRow(m_parityLabel, m_parityBox);
+    form->addRow(m_stopBitsLabel, m_stopBitsBox);
 
     m_pointTable = new QTableWidget(0, 6, this);
     m_pointTable->setHorizontalHeaderLabels({QStringLiteral("点位 ID"),
@@ -160,6 +184,14 @@ void DeviceDialog::applyProtocolVisibility()
     setRowVisible(m_userLabel, m_userEdit, traits.usesCredentials);
     setRowVisible(m_passwordLabel, m_passwordEdit, traits.usesCredentials);
 
+    // 串口参数：只有声明 usesSerial 的协议（Modbus RTU）才显示。
+    // 没装 Qt6SerialPort 的构建环境不会注册 RTU 插件，这里 traits.usesSerial 恒为 false，
+    // 控件始终隐藏 —— 与连接层的隔离逻辑保持一致。
+    setRowVisible(m_baudLabel, m_baudSpin, traits.usesSerial);
+    setRowVisible(m_dataBitsLabel, m_dataBitsSpin, traits.usesSerial);
+    setRowVisible(m_parityLabel, m_parityBox, traits.usesSerial);
+    setRowVisible(m_stopBitsLabel, m_stopBitsBox, traits.usesSerial);
+
     // 端点在界面上的叫法也由插件决定：MQTT 叫「订阅主题」，HTTP 叫「请求路径」——
     // 同一个配置字段，用各自协议的话说。
     if (traits.usesEndpoint) {
@@ -185,6 +217,9 @@ void DeviceDialog::updateHint(const QString &protocolId)
                                                         : traits.endpointLabel);
     if (traits.usesCredentials)
         tips << QStringLiteral("接入账号 / 密码留空即匿名接入（密码按明文保存，仅适合内网）。");
+    if (traits.usesSerial)
+        tips << QStringLiteral("「地址 / 主机」填串口名（Linux 形如 /dev/ttyS0，Windows 形如 COM3）；"
+                               "波特率 / 校验 / 停止位按现场接线填，默认 9600 / 8 / 无 / 1。");
 
     QStringList lines;
     if (!description.isEmpty())
@@ -291,6 +326,14 @@ void DeviceDialog::setDevice(const DeviceInfo &device)
     m_userEdit->setText(device.username);
     m_passwordEdit->setText(device.password);
 
+    // 串口参数：pull 进控件前先归一化，避免老库 / 缺省值落出合法范围。
+    m_baudSpin->setValue(device.baudRate > 0 ? device.baudRate : 9600);
+    m_dataBitsSpin->setValue((device.dataBits >= 5 && device.dataBits <= 8) ? device.dataBits : 8);
+    const int parityIndex = m_parityBox->findData(device.parity);
+    m_parityBox->setCurrentIndex(parityIndex >= 0 ? parityIndex : 0);
+    const int stopIndex = m_stopBitsBox->findData(device.stopBits);
+    m_stopBitsBox->setCurrentIndex(stopIndex >= 0 ? stopIndex : 0);
+
     // 端口放在协议之后设置，避免被 onProtocolChanged 的默认值覆盖。
     m_portSpin->setValue(device.port);
 
@@ -332,6 +375,20 @@ DeviceInfo DeviceDialog::device() const
     } else {
         info.username.clear();
         info.password.clear();
+    }
+
+    // 串口参数：仅 usesSerial 的协议（RTU）保留；切走时复位到默认 9600/8/N/1，
+    // 避免导出配置里夹带一份当前协议根本用不上的串口设置。
+    if (ProtocolRegistry::instance().traits(info.protocolId).usesSerial) {
+        info.baudRate = m_baudSpin->value();
+        info.dataBits = m_dataBitsSpin->value();
+        info.parity = m_parityBox->currentData().toInt();
+        info.stopBits = m_stopBitsBox->currentData().toInt();
+    } else {
+        info.baudRate = 9600;
+        info.dataBits = 8;
+        info.parity = 0;
+        info.stopBits = 1;
     }
 
     if (info.name.isEmpty())
