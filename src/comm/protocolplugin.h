@@ -27,7 +27,7 @@ struct ProtocolTraits
     ///
     /// 只有走串口的协议（Modbus RTU）才置 true；设备对话框据此显示串口参数控件。
     /// 串口模块（Qt6SerialPort）不一定装在所有构建环境里，对话框里这个控件用
-    /// `QT_CONFIG(serialport)` 隔离，没装时整段不出现 —— 与连接层的隔离保持一致。
+    /// `HAVE_QT_SERIALPORT` 宏护卫，没装时整段不出现 —— 与连接层的隔离保持一致。
     bool usesSerial = false;
 
     /// 该字段在界面上的叫法。为空时用「订阅主题」。

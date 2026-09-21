@@ -166,7 +166,7 @@ qt-industrial-equipment-monitor/
     │   ├── builtinprotocols.cpp 内置协议以插件形式注册（mock / modbus_tcp / mqtt / modbus_rtu，最后一项需 Qt6SerialPort）
     │   ├── mockconnection.*    模拟数据源
     │   ├── modbusconnection.*  Modbus TCP（手写 MBAP / PDU）
-    │   ├── modbusrtuconnection.* Modbus RTU（QSerialPort + CRC16，QT_CONFIG(serialport) 隔离）
+    │   ├── modbusrtuconnection.* Modbus RTU（QSerialPort + CRC16，HAVE_QT_SERIALPORT 宏护卫）
     │   ├── modbuscommon.h      Modbus 公共逻辑（PDU / CRC16 / 块读合并，TCP 与 RTU 共用）
     │   └── mqttconnection.*    MQTT 3.1.1（手写最小子集）
     ├── core/               # 设备模型、采集调度（线程化 + 自动重连）、告警引擎
@@ -495,17 +495,18 @@ MinGW 13.1 + Qt 6.11.2 / **Release 构建**（`cmake --preset qt-mingw-release`�
 按 22000 条/秒的写库能力，采集侧（5000 点/秒）离写库瓶颈还有 4 倍余量，
 **当前的瓶颈在采集线程数与 CPU，不在存储**。
 
-### ⚠️ 基线暴露出来的一个已知缺口：数据保留策略
+### 数据保留策略（已实现，无需担心磁盘撑爆）
 
-每行采样约 **209 字节**（含索引）。按 1000 点/秒连续跑一天：
+每段采样约 **209 字节**，1000 点/秒连续跑一天约 **17.6 GB** —— 这个量级的膨胀不处理，
+数据库迟早写满磁盘。项目已内置保留策略：
 
-```
-1000 点/秒 × 209 字节 ≈ 209 KB/s ≈ 17.6 GB/天
-```
+- **原始数据只保留最近 N 天**（默认 30 天，可经 QSettings 调整）；
+- **更早的数据按小时桶聚合成趋势行**存进 `samples_downsampled`（avg / min / max / 计数），
+  既能查长期趋势又不让库无限增长；
+- 聚合判定**对齐到桶边界**，避免"半个桶"被重复或丢失；
+- 启动时立即执行一次，之后每日定时执行，全程后台跑、不依赖界面。
 
-**当前没有清理 / 归档 / 降采样机制，数据库会一直长大。**
-短时演示没问题（几 MB），但接现场长期跑必须补：至少要有"只保留最近 N 天原始数据 +
-更早数据降采样"的策略。已记进 [ROADMAP.md](./ROADMAP.md) 的待办。
+实现与单测见 [ROADMAP.md](./ROADMAP.md) 的 P2-4 与 `tst_datastorage`。
 
 ## 开发约定
 
