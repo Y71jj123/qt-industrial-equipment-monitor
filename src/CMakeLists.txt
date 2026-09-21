@@ -68,7 +68,7 @@ set(PROJECT_SOURCES
 )
 
 # Modbus RTU 串口：仅当 Qt6SerialPort 装上时把源文件登记进 PROJECT_SOURCES。
-# 没装时整段通过 QT_CONFIG(serialport) 守卫被编译器忽略 —— 这里也不登记，
+# 没装时这里就不登记源文件（双重保险，避免链接时出现未定义的 QSerialPort 符号），
 # 避免链接时出现未定义的 QSerialPort 符号（双重保险）。
 if(Qt${QT_VERSION_MAJOR}SerialPort_FOUND)
     list(APPEND PROJECT_SOURCES

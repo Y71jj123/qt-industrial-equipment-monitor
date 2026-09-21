@@ -30,7 +30,7 @@ find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Charts QUIET)
 find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Test QUIET)
 
 # Qt SerialPort is optional: Modbus RTU 走串口需要它。没装时整个 RTU 连接类
-# （comm/modbusrtuconnection.*）因 QT_CONFIG(serialport) 守卫不进入编译，
+# （comm/modbusrtuconnection.*）因 HAVE_QT_SERIALPORT 宏守卫不进入编译，
 # 主程序照常构建，只是不会出现 "Modbus RTU" 这个协议选项。
 find_package(Qt${QT_VERSION_MAJOR} COMPONENTS SerialPort QUIET)
 

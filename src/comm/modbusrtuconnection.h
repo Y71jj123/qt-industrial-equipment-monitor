@@ -4,7 +4,7 @@
 #include "core/devicemanager.h"
 
 // 串口类是 Qt6SerialPort 模块提供的；该模块不一定装在所有构建环境里
-// （例如本机 Windows 开发环境就没装）。用 QT_CONFIG(serialport) 把整段代码隔离，
+// （例如本机 Windows 开发环境就没装）。用 HAVE_QT_SERIALPORT 宏把整段代码隔离，
 // 没装时这里就是空的 —— 主程序照常编译，只是不会出现 Modbus RTU 这个选项。
 // CMake 一侧只在 Qt6SerialPort_FOUND 时才把本类的 .cpp 编进工程。
 #if defined(HAVE_QT_SERIALPORT)
@@ -72,4 +72,4 @@ private:
     bool m_open = false;
 };
 
-#endif // QT_CONFIG(serialport)
+#endif // HAVE_QT_SERIALPORT

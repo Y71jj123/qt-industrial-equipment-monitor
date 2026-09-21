@@ -101,7 +101,7 @@ public:
     DeviceConnection *create() const override { return new ModbusRtuConnection(); }
 };
 
-#endif // QT_CONFIG(serialport)
+#endif // HAVE_QT_SERIALPORT
 
 } // namespace
 

@@ -307,4 +307,4 @@ bool ModbusRtuConnection::writeTag(const QString &tagId, const QVariant &value)
     return true;
 }
 
-#endif // QT_CONFIG(serialport)
+#endif // HAVE_QT_SERIALPORT
