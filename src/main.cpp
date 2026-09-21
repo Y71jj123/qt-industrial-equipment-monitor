@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDir>
+#include <QSettings>
 #include <QStandardPaths>
 
 #include "comm/protocolregistry.h"
@@ -52,8 +53,16 @@ int main(int argc, char *argv[])
     Log::info(QStringLiteral("用户 %1（%2）已登录")
                   .arg(login.userName(), userRoleName(login.role())));
 
-    // 数据层：本地历史数据（失败不致命，仅影响历史查询 / 统计功能）
+    // 数据保留策略：运行时配置（存 QSettings），默认值保留 30 天、按 1 小时桶降采样。
+    // 不依赖界面：改配置无需重新编译，纯 SQLite + 定时器后台跑，不影响采集与界面。
     DataStorage storage;
+    {
+        QSettings settings(QStringLiteral("Y71jj123"), QStringLiteral(APP_NAME));
+        storage.setRetentionPolicy(
+            settings.value(QStringLiteral("storage/retentionDays"), 30).toInt(),
+            settings.value(QStringLiteral("storage/downsampleEnabled"), true).toBool(),
+            settings.value(QStringLiteral("storage/downsampleBucketHours"), 1).toInt());
+    }
     if (!storage.open()) {
         Log::warn(QStringLiteral("本地数据库打开失败，历史数据功能将不可用"));
     }
