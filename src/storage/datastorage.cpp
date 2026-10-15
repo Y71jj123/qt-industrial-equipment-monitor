@@ -22,7 +22,11 @@
 
 namespace {
 
+/// 读连接名（调用者线程 / GUI 用）。
 constexpr auto kConnectionName = "app-main";
+
+/// 写连接名（写线程用）。两条连接指向同一个库文件，靠 SQLite 的 WAL 模式并发。
+constexpr auto kWriterConnectionName = "app-writer";
 
 /// 默认数据库位置：系统标准的应用数据目录
 /// （Windows 上形如 %APPDATA%\<组织>\<应用>\monitor.db）。
@@ -55,82 +59,200 @@ DataStorage::DataStorage(QObject *parent, const QString &databasePath)
     , m_databasePath(databasePath.isEmpty() ? defaultDatabasePath() : databasePath)
     , m_spillPath(m_databasePath + QStringLiteral(".pending.jsonl"))
 {
+    // 写线程在构造期就起来：这样即使从未 open()（库不可用），
+    // 采样也能照常入队、并在写线程里溢出到磁盘队列。
+    startWriter();
 }
 
 DataStorage::~DataStorage()
 {
     close();
+    stopWriter();
+}
+
+void DataStorage::startWriter()
+{
+    if (m_writerThread)
+        return;
+
+    m_writerThread = new QThread;
+    m_writerThread->setObjectName(QStringLiteral("DataStorageWriter"));
+
+    // stub 就是"写线程里的一个 QObject"：给 invokeMethod 提供线程亲和，
+    // 同时作为写线程内定时器的父对象 —— QTimer 必须属于它被创建的线程，
+    // 拿 DataStorage（GUI 线程对象）当父对象是错的，那样定时器仍然住在 GUI 线程。
+    m_writerStub = new QObject;
+    m_writerStub->moveToThread(m_writerThread);
+
+    m_writerThread->start();
+}
+
+void DataStorage::stopWriter()
+{
+    if (!m_writerThread)
+        return;
+
+    // 让写线程自己收尾：停定时器 → 把队列里剩的提交掉 → 关写连接。
+    inWriter([this]() {
+        if (m_flushTimer) {
+            m_flushTimer->stop();
+            m_flushTimer = nullptr;
+        }
+        if (m_retentionTimer) {
+            m_retentionTimer->stop();
+            m_retentionTimer = nullptr;
+        }
+        flush(); // 此处已在写线程 → 就地执行，不会自锁
+        if (m_writeDb.isOpen())
+            m_writeDb.close();
+    });
+
+    m_writerThread->quit();
+    m_writerThread->wait();
+
+    delete m_writerStub; // 随它一起析构掉写线程内那两个定时器
+    m_writerStub = nullptr;
+    delete m_writerThread;
+    m_writerThread = nullptr;
+
+    // 连接要先把引用释放掉再移除，否则 Qt 会警告 "connection is still in use"
+    if (QSqlDatabase::contains(QLatin1String(kWriterConnectionName))) {
+        m_writeDb = QSqlDatabase();
+        QSqlDatabase::removeDatabase(QLatin1String(kWriterConnectionName));
+    }
+
+    m_flushTimer = nullptr;
+    m_retentionTimer = nullptr;
+}
+
+QSqlDatabase &DataStorage::db() const
+{
+    // 写线程 → 写连接；其余线程（GUI / 测试主线程）→ 读连接。
+    // "一条连接只被一个线程碰"就落在这里：方法体不必关心自己被转发到了哪条线程。
+    if (m_writerThread && QThread::currentThread() == m_writerThread)
+        return m_writeDb;
+    return m_db;
 }
 
 bool DataStorage::open()
 {
-    if (m_db.isOpen())
+    if (db().isOpen())
         return true;
 
     const QFileInfo info(m_databasePath);
     QDir().mkpath(info.absolutePath());
 
+    // ---- 1) 写线程：开写连接 + 建表 + 补传积压（都要写库，必须在写线程做）----
+    bool writeReady = false;
+    inWriter([this, &writeReady]() {
+        if (QSqlDatabase::contains(QLatin1String(kWriterConnectionName)))
+            m_writeDb = QSqlDatabase::database(QLatin1String(kWriterConnectionName));
+        else
+            m_writeDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                  QLatin1String(kWriterConnectionName));
+
+        m_writeDb.setDatabaseName(m_databasePath);
+        if (!m_writeDb.open()) {
+            m_lastError = m_writeDb.lastError().text();
+            Log::error(QStringLiteral("数据库打开失败: %1").arg(m_lastError));
+            return;
+        }
+
+        // WAL 让"读连接 + 写连接"能真正并发（默认 rollback journal 下读会被写阻塞）；
+        // NORMAL 是 WAL 下的推荐档位；busy_timeout 兜住两条连接偶发的锁竞争。
+        QSqlQuery pragma(m_writeDb);
+        pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
+        pragma.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
+        pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
+
+        if (!createTables()) {
+            m_writeDb.close();
+            return;
+        }
+
+        // 先把上次没落库的积压补传进来，再开始接收新数据 ——
+        // 顺序反过来的话，历史查询里会出现"新的在前、补传的在后"的时间空洞。
+        replaySpillFile();
+
+        // 攒批定时器住**写线程**：它触发的事务提交从此不再阻塞界面。
+        // 父对象必须是 m_writerStub（写线程里的对象）—— 若用 this 当父对象，
+        // 定时器会被登记到 GUI 线程，等于白迁。
+        if (!m_flushTimer) {
+            m_flushTimer = new QTimer(m_writerStub);
+            m_flushTimer->setInterval(kSampleFlushIntervalMs);
+            connect(m_flushTimer, &QTimer::timeout, this, &DataStorage::flush);
+        }
+        m_flushTimer->start();
+
+        // 保留策略定时器同样住写线程（清理是大批量删除 + 聚合，留在 GUI 会卡界面）。
+        startRetentionTimer();
+
+        writeReady = true;
+    });
+
+    if (!writeReady)
+        return false;
+
+    // ---- 2) 调用者线程：开读连接（只跑查询；WAL 下读写互不阻塞）----
     if (QSqlDatabase::contains(QLatin1String(kConnectionName)))
         m_db = QSqlDatabase::database(QLatin1String(kConnectionName));
     else
         m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QLatin1String(kConnectionName));
 
     m_db.setDatabaseName(m_databasePath);
-
     if (!m_db.open()) {
         m_lastError = m_db.lastError().text();
-        Log::error(QStringLiteral("数据库打开失败: %1").arg(m_lastError));
+        Log::error(QStringLiteral("读连接打开失败: %1").arg(m_lastError));
         return false;
     }
 
-    if (!createTables()) {
-        m_db.close();
-        return false;
-    }
-
-    // 先把上次没落库的积压补传进来，再开始接收新数据 ——
-    // 顺序反过来的话，历史查询里会出现"新的在前、补传的在后"的时间空洞。
-    replaySpillFile();
-
-    // 攒批提交的定时器：住在本对象所在线程（GUI），SQLite 连接不跨线程
-    if (!m_flushTimer) {
-        m_flushTimer = new QTimer(this);
-        m_flushTimer->setInterval(kSampleFlushIntervalMs);
-        connect(m_flushTimer, &QTimer::timeout, this, &DataStorage::flush);
-    }
-    m_flushTimer->start();
-
-    // 数据保留策略：启动即跑一次（清理历史积压的过期数据），之后每日由定时器执行。
-    startRetentionTimer();
+    // 启动即跑一次保留策略（清理历史积压的过期数据），之后交给写线程的每日定时器。
     applyRetentionPolicy();
 
-    Log::info(QStringLiteral("历史数据库已就绪: %1").arg(m_databasePath));
+    Log::info(QStringLiteral("历史数据库已就绪: %1（读写连接分离）").arg(m_databasePath));
     return true;
 }
 
 void DataStorage::close()
 {
-    if (m_flushTimer)
-        m_flushTimer->stop();
+    // 停定时器 → 把队列里剩的提交掉 → 关写连接：三件事都在写线程里做，
+    // 免得与写线程正在进行的提交撞车。
+    inWriter([this]() {
+        if (m_flushTimer)
+            m_flushTimer->stop();
 
-    // 关库前先落盘，否则队列里那几条就跟着进程一起没了
-    flush();
+        // 关库前先落盘，否则队列里那几条就跟着进程一起没了
+        flush();
+
+        if (m_writeDb.isOpen())
+            m_writeDb.close();
+    });
 
     if (m_db.isOpen())
         m_db.close();
+
+    // 读连接在本线程释放引用后再移除，否则 Qt 会警告 "connection is still in use"
+    if (QSqlDatabase::contains(QLatin1String(kConnectionName))) {
+        m_db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(QLatin1String(kConnectionName));
+    }
 }
 
 void DataStorage::setRetentionPolicy(int retentionDays, bool downsampleEnabled, int bucketHours)
 {
-    m_retentionDays = std::max(1, retentionDays);
-    m_downsampleEnabled = downsampleEnabled;
-    m_bucketHours = std::max(1, bucketHours);
+    // 在写线程里改这三个参数：它们由写线程的每日定时器读取，就地改会形成数据竞争。
+    inWriter([this, retentionDays, downsampleEnabled, bucketHours]() {
+        m_retentionDays = std::max(1, retentionDays);
+        m_downsampleEnabled = downsampleEnabled;
+        m_bucketHours = std::max(1, bucketHours);
+    });
 }
 
 void DataStorage::startRetentionTimer()
 {
+    // 只在写线程里调用（由 open() 转发进来）—— 定时器必须属于它被创建的线程
     if (!m_retentionTimer) {
-        m_retentionTimer = new QTimer(this);
+        m_retentionTimer = new QTimer(m_writerStub);
         m_retentionTimer->setInterval(int(kRetentionCheckIntervalMs));
         connect(m_retentionTimer, &QTimer::timeout, this, &DataStorage::applyRetentionPolicy);
     }
@@ -139,7 +261,14 @@ void DataStorage::startRetentionTimer()
 
 bool DataStorage::applyRetentionPolicy()
 {
-    if (!m_db.isOpen())
+    // 转发到写线程（清理是"聚合 + 大批量删除"，留在 GUI 会卡界面）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &ok]() { ok = applyRetentionPolicy(); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
     // 超过这个时间点（对齐到桶边界）的原始采样即视为"过期"。
@@ -152,8 +281,8 @@ bool DataStorage::applyRetentionPolicy()
     const QDateTime alignedCutoff = QDateTime::fromSecsSinceEpoch(alignedCutoffSec);
 
     // 聚合与删除放进同一个事务，要么都成、要么都不成。
-    if (!m_db.transaction()) {
-        m_lastError = m_db.lastError().text();
+    if (!db().transaction()) {
+        m_lastError = db().lastError().text();
         Log::warn(QStringLiteral("数据保留策略失败（事务开启失败）: %1").arg(m_lastError));
         return false;
     }
@@ -164,7 +293,7 @@ bool DataStorage::applyRetentionPolicy()
         // INSERT OR REPLACE + (device, tag, bucket_start) 唯一键 → 幂等：
         // 每个过期桶只会在"首次完全过期"时聚合一次，聚合后原始行随即被删除，不会重现；
         // 若期间插入了更老的数据（落在已聚合过的桶里），REPLACE 会用全量数据覆盖，不重复不丢失。
-        QSqlQuery aggregate(m_db);
+        QSqlQuery aggregate(db());
         aggregate.prepare(QStringLiteral(
             "INSERT OR REPLACE INTO samples_downsampled "
             "(bucket_start, device, tag, avg_value, min_value, max_value, sample_count) "
@@ -181,7 +310,7 @@ bool DataStorage::applyRetentionPolicy()
     }
 
     if (ok) {
-        QSqlQuery del(m_db);
+        QSqlQuery del(db());
         del.prepare(QStringLiteral("DELETE FROM samples WHERE ts < :cutoff"));
         del.bindValue(QStringLiteral(":cutoff"), alignedCutoff);
         if (!del.exec()) {
@@ -190,12 +319,12 @@ bool DataStorage::applyRetentionPolicy()
         }
     }
 
-    if (ok && !m_db.commit()) {
-        m_lastError = m_db.lastError().text();
+    if (ok && !db().commit()) {
+        m_lastError = db().lastError().text();
         ok = false;
     }
     if (!ok) {
-        m_db.rollback();
+        db().rollback();
         Log::warn(QStringLiteral("数据保留策略执行失败，已回滚: %1").arg(m_lastError));
         return false;
     }
@@ -209,9 +338,9 @@ bool DataStorage::applyRetentionPolicy()
 
 qint64 DataStorage::downsampledRowCount() const
 {
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return -1;
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM samples_downsampled")))
         return -1;
     return query.next() ? query.value(0).toLongLong() : -1;
@@ -219,12 +348,12 @@ qint64 DataStorage::downsampledRowCount() const
 
 bool DataStorage::isOpen() const
 {
-    return m_db.isOpen();
+    return db().isOpen();
 }
 
 bool DataStorage::createTables()
 {
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
 
     const QStringList statements = {
         QStringLiteral("CREATE TABLE IF NOT EXISTS samples ("
@@ -360,7 +489,7 @@ bool DataStorage::ensureColumn(const QString &table, const QString &column, cons
 {
     // 先问 PRAGMA 有没有这一列：直接 ALTER TABLE 会在列已存在时报错，
     // 每次启动都往日志里甩一条 "duplicate column name" 纯属噪音。
-    QSqlQuery probe(m_db);
+    QSqlQuery probe(db());
     if (!probe.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) {
         m_lastError = probe.lastError().text();
         return false;
@@ -371,7 +500,7 @@ bool DataStorage::ensureColumn(const QString &table, const QString &column, cons
             return true;
     }
 
-    QSqlQuery alter(m_db);
+    QSqlQuery alter(db());
     if (!alter.exec(QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
                         .arg(table, column, definition))) {
         m_lastError = alter.lastError().text();
@@ -400,41 +529,60 @@ bool DataStorage::insertSample(const QString &deviceId,
     sample.deviceId = deviceId;
     sample.tagId = tagId;
     sample.value = value;
-    m_pendingSamples.append(sample);
 
-    // 高频采集时不等定时器，攒够一批立刻走 —— 否则队列会被采样速度甩开
-    if (m_pendingSamples.size() >= kSampleBatchSize)
-        flush();
+    // 这个队列会被两个角色同时碰：采集线程往里塞、写线程整批取走 —— 必须上锁。
+    int pending = 0;
+    {
+        QMutexLocker locker(&m_queueMutex);
+        m_pendingSamples.append(sample);
+        pending = int(m_pendingSamples.size());
+    }
+
+    // 高频采集时不等定时器，攒够一批立刻**异步**通知写线程提交。
+    // 这里绝不能用同步转发：写线程可能正卡在一次批量提交（fsync）上，
+    // 同步等它等于把采集线程一起拖住 —— 而那正是本次改造要消除的阻塞。
+    if (pending >= kSampleBatchSize)
+        postWriter([this]() { flush(); });
 
     return true;
 }
 
 void DataStorage::flush()
 {
-    if (m_pendingSamples.isEmpty())
-        return;
-
-    if (!m_db.isOpen()) {
-        // 库不可用：**不丢数据**，整批溢出到磁盘队列，等下次 open() 时补写。
-        // 以前这里是直接丢弃并打一条警告 —— 对工业数据来说，"丢掉"永远是最差的选项。
-        spillBatch(m_pendingSamples);
-        m_pendingSamples.clear();
+    // 转发到写线程：事务提交是磁盘 I/O，正是最该离开界面线程的那一段。
+    // 已在写线程（定时器触发 / open、close 内部调用）则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        inWriter([this]() { flush(); });
         return;
     }
 
-    const QList<PendingSample> batch = m_pendingSamples;
-    m_pendingSamples.clear();
+    // 取批同样要上锁：采集线程可能正在 append
+    QList<PendingSample> batch;
+    {
+        QMutexLocker locker(&m_queueMutex);
+        if (m_pendingSamples.isEmpty())
+            return;
+        batch = m_pendingSamples;
+        m_pendingSamples.clear();
+    }
+
+    if (!db().isOpen()) {
+        // 库不可用：**不丢数据**，整批溢出到磁盘队列，等下次 open() 时补写。
+        // 以前这里是直接丢弃并打一条警告 —— 对工业数据来说，"丢掉"永远是最差的选项。
+        spillBatch(batch);
+        return;
+    }
 
     // 一个事务装一整批：SQLite 默认每条 INSERT 单独提交（各自一次 fsync），
     // 合并后几百条数据只落一次盘 —— 这才是批量写入真正的收益所在。
-    if (!m_db.transaction()) {
-        m_lastError = m_db.lastError().text();
+    if (!db().transaction()) {
+        m_lastError = db().lastError().text();
         Log::warn(QStringLiteral("采样批量写入失败（事务开启失败），转入磁盘队列: %1").arg(m_lastError));
         spillBatch(batch);
         return;
     }
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "INSERT INTO samples (ts, device, tag, value) VALUES (:ts, :device, :tag, :value)"));
 
@@ -452,13 +600,13 @@ void DataStorage::flush()
         }
     }
 
-    if (ok && !m_db.commit()) {
-        m_lastError = m_db.lastError().text();
+    if (ok && !db().commit()) {
+        m_lastError = db().lastError().text();
         ok = false;
     }
 
     if (!ok) {
-        m_db.rollback();
+        db().rollback();
         // 整批回滚后**转入磁盘队列**而不是丢弃：回滚意味着这一批一条都没落库，
         // 留着它们才能保证"数据一条不少"。
         Log::warn(QStringLiteral("采样批量写入失败，本批 %1 条转入磁盘队列: %2")
@@ -585,14 +733,14 @@ void DataStorage::replaySpillFile()
                   return left.time < right.time;
               });
 
-    if (!m_db.transaction()) {
-        m_lastError = m_db.lastError().text();
+    if (!db().transaction()) {
+        m_lastError = db().lastError().text();
         Log::warn(QStringLiteral("补传未执行（事务开启失败），队列保留待下次启动重试: %1")
                       .arg(m_lastError));
         return;
     }
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "INSERT INTO samples (ts, device, tag, value) VALUES (:ts, :device, :tag, :value)"));
 
@@ -609,14 +757,14 @@ void DataStorage::replaySpillFile()
         }
     }
 
-    if (ok && !m_db.commit()) {
-        m_lastError = m_db.lastError().text();
+    if (ok && !db().commit()) {
+        m_lastError = db().lastError().text();
         ok = false;
     }
 
     if (!ok) {
         // 回滚了就等于一条都没写进去，队列文件绝对不能删，否则这批数据就真没了。
-        m_db.rollback();
+        db().rollback();
         Log::warn(QStringLiteral("补传失败，%1 条采样仍留在磁盘队列: %2")
                       .arg(recovered.size())
                       .arg(m_lastError));
@@ -640,10 +788,10 @@ QList<DataStorage::Sample> DataStorage::querySamples(const QString &deviceId,
                                                      int limit) const
 {
     QList<Sample> result;
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return result;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "SELECT ts, device, tag, value FROM samples"
         " WHERE device = :device AND tag = :tag AND ts BETWEEN :from AND :to"
@@ -705,10 +853,17 @@ bool DataStorage::exportSamplesCsv(const QString &deviceId,
 
 bool DataStorage::insertAlarm(const AlarmRecord &record)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &record, &ok]() { ok = insertAlarm(record); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "INSERT INTO alarms (ts, device, tag, level, value, low_limit, high_limit,"
         " message, active, acknowledged, disposition, handled_by, handled_at, note)"
@@ -748,10 +903,17 @@ bool DataStorage::insertAlarm(const AlarmRecord &record)
 
 bool DataStorage::markAlarmInactive(const QString &deviceId, const QString &tagId)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &deviceId, &tagId, &ok]() { ok = markAlarmInactive(deviceId, tagId); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "UPDATE alarms SET active = 0"
         " WHERE id = (SELECT id FROM alarms WHERE device = :device AND tag = :tag"
@@ -768,10 +930,17 @@ bool DataStorage::markAlarmInactive(const QString &deviceId, const QString &tagI
 
 bool DataStorage::markAlarmAcknowledged(const QString &deviceId, const QString &tagId)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &deviceId, &tagId, &ok]() { ok = markAlarmAcknowledged(deviceId, tagId); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "UPDATE alarms SET acknowledged = 1"
         " WHERE id = (SELECT id FROM alarms WHERE device = :device AND tag = :tag"
@@ -792,10 +961,17 @@ bool DataStorage::markAlarmHandled(const QString &deviceId,
                                    const QString &handledBy,
                                    const QString &note)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &deviceId, &tagId, &disposition, &handledBy, &note, &ok]() { ok = markAlarmHandled(deviceId, tagId, disposition, handledBy, note); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     // 处理必然意味着"已经确认过了"，所以顺手把 acknowledged 也置 1，
     // 免得出现"已处理但未确认"这种自相矛盾的状态。
     query.prepare(QStringLiteral(
@@ -823,10 +999,10 @@ QList<AlarmRecord> DataStorage::queryAlarms(const QDateTime &from,
                                             int limit) const
 {
     QList<AlarmRecord> result;
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return result;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "SELECT ts, device, tag, level, value, low_limit, high_limit, message, active, acknowledged,"
         " disposition, handled_by, handled_at, note"
@@ -865,10 +1041,17 @@ QList<AlarmRecord> DataStorage::queryAlarms(const QDateTime &from,
 
 bool DataStorage::clearAlarms()
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &ok]() { ok = clearAlarms(); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     if (!query.exec(QStringLiteral("DELETE FROM alarms"))) {
         m_lastError = query.lastError().text();
         return false;
@@ -880,10 +1063,17 @@ bool DataStorage::clearAlarms()
 
 bool DataStorage::insertOperation(const OperationEntry &entry)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &entry, &ok]() { ok = insertOperation(entry); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "INSERT INTO operations (ts, username, device, tag, action, detail, success)"
         " VALUES (:ts, :user, :device, :tag, :action, :detail, :success)"));
@@ -905,10 +1095,10 @@ bool DataStorage::insertOperation(const OperationEntry &entry)
 QList<DataStorage::OperationEntry> DataStorage::queryOperations(int limit) const
 {
     QList<OperationEntry> result;
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return result;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "SELECT ts, username, device, tag, action, detail, success"
         " FROM operations ORDER BY ts DESC LIMIT :limit"));
@@ -937,10 +1127,17 @@ QList<DataStorage::OperationEntry> DataStorage::queryOperations(int limit) const
 
 bool DataStorage::saveDevice(const DeviceInfo &device)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &device, &ok]() { ok = saveDevice(device); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral(
         "REPLACE INTO devices (id, name, host, port, slave, protocol, protocol_id, poll_ms,"
         " mqtt_topic, points, grp, username, password, baud_rate, data_bits, parity, stop_bits)"
@@ -977,10 +1174,17 @@ bool DataStorage::saveDevice(const DeviceInfo &device)
 
 bool DataStorage::clearDevices()
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &ok]() { ok = clearDevices(); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     if (!query.exec(QStringLiteral("DELETE FROM devices"))) {
         m_lastError = query.lastError().text();
         return false;
@@ -990,10 +1194,17 @@ bool DataStorage::clearDevices()
 
 bool DataStorage::removeDevice(const QString &id)
 {
-    if (!m_db.isOpen())
+    // 写操作转发到写线程执行（同步等待，返回值语义与改造前一致）；已在写线程则就地执行。
+    if (m_writerStub && QThread::currentThread() != m_writerThread) {
+        bool ok = false;
+        inWriter([this, &id, &ok]() { ok = removeDevice(id); });
+        return ok;
+    }
+
+    if (!db().isOpen())
         return false;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     query.prepare(QStringLiteral("DELETE FROM devices WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), id);
 
@@ -1007,10 +1218,10 @@ bool DataStorage::removeDevice(const QString &id)
 QList<DeviceInfo> DataStorage::loadDevices() const
 {
     QList<DeviceInfo> result;
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return result;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     if (!query.exec(QStringLiteral(
             "SELECT id, name, host, port, slave, protocol, poll_ms, mqtt_topic, points, grp,"
             " username, password, protocol_id, baud_rate, data_bits, parity, stop_bits"
@@ -1062,12 +1273,12 @@ QList<DataStorage::DeviceStats> DataStorage::queryDeviceStats(const QDateTime &f
                                                               const QDateTime &to) const
 {
     QList<DeviceStats> result;
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return result;
 
     QHash<QString, DeviceStats> byDevice;
 
-    QSqlQuery sampleQuery(m_db);
+    QSqlQuery sampleQuery(db());
     sampleQuery.prepare(QStringLiteral(
         "SELECT device, COUNT(*), MIN(ts), MAX(ts) FROM samples"
         " WHERE ts BETWEEN :from AND :to GROUP BY device"));
@@ -1084,7 +1295,7 @@ QList<DataStorage::DeviceStats> DataStorage::queryDeviceStats(const QDateTime &f
         }
     }
 
-    QSqlQuery alarmQuery(m_db);
+    QSqlQuery alarmQuery(db());
     // 一次查询取齐告警数、已处理数与该设备的平均处理时长：
     //   - SUM(CASE ...) 数"已处理"（handled_at 非空）
     //   - AVG(CASE ...) 只对已处理的样本求平均（CASE 里的 NULL 会被 AVG 自动忽略）
@@ -1120,10 +1331,10 @@ QList<DataStorage::DeviceStats> DataStorage::queryDeviceStats(const QDateTime &f
 
 qint64 DataStorage::countSamples(const QDateTime &from, const QDateTime &to) const
 {
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return 0;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     // 两个时间都无效才走全表 COUNT：只要用户给了区间就按区间算，
     // 免得"忘了传参"静静地退化成全表扫描还看不出问题。
     if (from.isValid() && to.isValid()) {
@@ -1143,10 +1354,10 @@ qint64 DataStorage::countSamples(const QDateTime &from, const QDateTime &to) con
 
 int DataStorage::countAlarms(const QDateTime &from, const QDateTime &to) const
 {
-    if (!m_db.isOpen())
+    if (!db().isOpen())
         return 0;
 
-    QSqlQuery query(m_db);
+    QSqlQuery query(db());
     if (from.isValid() && to.isValid()) {
         query.prepare(QStringLiteral("SELECT COUNT(*) FROM alarms WHERE ts BETWEEN :from AND :to"));
         query.bindValue(QStringLiteral(":from"), from);

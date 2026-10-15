@@ -77,6 +77,21 @@ if(MONITOR_BUILD_BENCH)
 endif()
 
 # ---------------------------------------------------------------------------
+# 虚拟设备模拟器：默认开启。
+#
+# 它是一个**独立可运行的 Modbus TCP 从站**，与监控端走真实 TCP 链路，用于：
+#   - 双窗口演示（左边假设备、右边监控软件），数据真的经网络流过去；
+#   - 真实链路验证（连接管理 / 块读 / 异常响应 / 断线重连 / 远程控制），
+#     这些是进程内 mock 覆盖不到的。
+# 关掉它：-DMONITOR_BUILD_VIRTUAL_DEVICE=OFF
+# ---------------------------------------------------------------------------
+option(MONITOR_BUILD_VIRTUAL_DEVICE "构建虚拟设备模拟器 virtual_device（默认开启）" ON)
+if(MONITOR_BUILD_VIRTUAL_DEVICE)
+    message(STATUS "VirtualDev   : enabled (virtual_device)")
+    add_subdirectory(tools/virtual_device)
+endif()
+
+# ---------------------------------------------------------------------------
 # 安装与打包（CPack）
 #
 # 目标是产出一个**解压即用**的压缩包：里面不仅有 exe，还有 Qt 运行时依赖。

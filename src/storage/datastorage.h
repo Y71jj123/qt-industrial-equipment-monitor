@@ -5,9 +5,13 @@
 
 #include <QDateTime>
 #include <QList>
+#include <QMutex>
 #include <QObject>
 #include <QSqlDatabase>
 #include <QString>
+#include <QThread>
+
+#include <utility>
 
 class QTimer;
 
@@ -25,8 +29,17 @@ class QTimer;
 /// kSampleFlushIntervalMs 由定时器触发一次，用**一个事务**批量 INSERT。
 /// 高频采集下把 N 次磁盘同步压成 1 次，这是量级上的差别。
 ///
-/// **线程约束**：SQLite 连接不能跨线程共用 —— 队列提交始终由本对象所在线程
-/// （GUI 线程）的定时器驱动，工作线程只负责把数据通过信号抛过来。
+/// **读写分离（线程化）**：SQLite 连接不能跨线程共用，而磁盘 I/O 又会拖住界面，
+/// 所以本类内部把连接拆成两条，各归一条线程：
+///   - **读连接**（`m_db`）住在调用者线程（GUI），所有查询走它 —— 查询有索引，
+///     留在主线程反而更快，省掉跨线程往返；
+///   - **写连接**（`m_writeDb`）住在本类自建的**写线程**，所有写操作
+///     （采样批量提交 / 告警 / 操作留痕 / 设备台账 / 保留策略清理）都在那里执行。
+///
+/// 公开接口的签名与语义**完全不变**（写操作经 BlockingQueuedConnection 转发，
+/// 调用者返回时数据已落库），因此调用方与单元测试都无需改动。
+/// 唯一例外是 `insertSample()`：高频路径，只入队不等待，
+/// 由写线程自己的定时器攒批提交 —— 这正是"采集 1000 点/秒也不卡界面"的关键。
 class DataStorage : public QObject
 {
     Q_OBJECT
@@ -232,6 +245,42 @@ private:
     QString m_databasePath;
     /// 采样溢出队列文件：与数据库同目录，文件名派生自数据库名。
     QString m_spillPath;
-    QSqlDatabase m_db;
+
+    /// 按当前线程选连接：写线程 → 写连接；其他线程（GUI）→ 读连接。
+    /// 这样"一条连接只被一个线程碰"由代码结构保证，而不是靠注释约束。
+    QSqlDatabase &db() const;
+
+    /// 在写线程同步执行（BlockingQueuedConnection）；已在写线程则就地执行，避免自锁。
+    template <typename F>
+    void inWriter(F &&fn) const
+    {
+        if (!m_writerStub || QThread::currentThread() == m_writerThread) {
+            fn();
+            return;
+        }
+        QMetaObject::invokeMethod(m_writerStub, std::forward<F>(fn), Qt::BlockingQueuedConnection);
+    }
+
+    /// 在写线程异步执行（不阻塞调用者）；已在写线程则就地执行。
+    template <typename F>
+    void postWriter(F &&fn) const
+    {
+        if (!m_writerStub || QThread::currentThread() == m_writerThread) {
+            fn();
+            return;
+        }
+        QMetaObject::invokeMethod(m_writerStub, std::forward<F>(fn), Qt::QueuedConnection);
+    }
+
+    /// 启动写线程（构造函数里就启动，不必等 open()）。
+    void startWriter();
+    /// 结束写线程（close / 析构收尾用）。
+    void stopWriter();
+
+    mutable QSqlDatabase m_db;      ///< 读连接（调用者线程）
+    mutable QSqlDatabase m_writeDb; ///< 写连接（写线程）
+    mutable QMutex m_queueMutex;    ///< 保护 m_pendingSamples（跨线程访问）
+    QThread *m_writerThread = nullptr;
+    QObject *m_writerStub = nullptr; ///< 写线程内的执行者（只用于提供线程亲和）
     mutable QString m_lastError;
 };

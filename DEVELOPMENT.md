@@ -12,8 +12,9 @@
 | 界面 | `src/ui/` | 主窗口 + 各功能面板，只做展示与转发 |
 | 通信 | `src/comm/` | `DeviceConnection` 抽象 + Mock / Modbus TCP / MQTT 实现 |
 | 核心 | `src/core/` | 设备台账、采集调度（含自动重连）、告警引擎 |
-| 存储 | `src/storage/` | SQLite 四表：`samples` / `alarms` / `operations` / `devices` |
-| 工具 | `src/utils/` | 日志 |
+| 存储 | `src/storage/` | SQLite 四表：`samples` / `alarms` / `operations` / `devices`（**读写连接分离**，见「线程模型」） |
+| 工具 | `src/utils/` | 日志（滚动）/ 配置导入导出 / Excel 导出 / 崩溃转储 |
+| 联调工具 | `tools/` | 图形化虚拟设备 `virtual_device/`（可独立运行的 Modbus TCP 从站）+ 零依赖 Python 模拟器 |
 
 ## 构建与验证（**每次改完必须自己编译验证**）
 
@@ -37,9 +38,10 @@ E:/Qt/Tools/CMake_64/bin/cmake.exe --build build-vscode --parallel 8
 E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
 ```
 
-- 四个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR）、`tst_datastorage`
-  （告警 NULL 语义 / 统计口径 / 溢出队列与补传顺序）、`tst_configio`（配置往返）、
-  `tst_protocolregistry`（注册表规则 / 老整型映射 / 外部插件加载）。
+- 五个套件：`tst_alarmengine`（状态机 / 工单闭环 / MTTR）、`tst_datastorage`
+  （告警 NULL 语义 / 统计口径 / 溢出队列与补传顺序 / 保留策略聚合）、`tst_configio`（配置往返）、
+  `tst_protocolregistry`（注册表规则 / 老整型映射 / 外部插件加载）、
+  `tst_modbus`（CRC16 标准向量 / 连续块合并 / 寄存器与线圈解析 / 块读分组）。
 - 测试**链接 `monitor_core`**，也就是产品实际运行的那份代码；不要另外编译一份源码来测。
 - 新增测试文件后要在 `tests/CMakeLists.txt` 里加一行 `monitor_add_test(<名字>)`。
 - 测试一律用 `QTEST_GUILESS_MAIN`（QCoreApplication）—— CI 没有显示器，
@@ -151,11 +153,13 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
   2. **报告里必须写清构建类型与机器**。本机 VS Code 的预设是 **Debug**，
      用 Debug 跑出来的吞吐会明显低于 README 里那份 Release 数字，别混着比。
 
-## ⚠️ 已知缺口：没有数据保留策略
+## 数据保留策略（P2-4，已实现）
 
-每行采样约 209 字节（含索引），1000 点/秒连续跑一天约 **17.6 GB**。
-数据库目前**只增不减**，没有任何清理 / 归档 / 降采样 —— 短时演示没问题，
-但这是"接现场长期跑"必须补的一块（见 ROADMAP）。改动 `samples` 表相关逻辑时别忘了这件事。
+每行采样约 209 字节（含索引），1000 点/秒连续跑一天约 **17.6 GB** ——
+`applyRetentionPolicy()` 负责"保留最近 N 天原始数据 + 更早数据按小时桶降采样"：
+过期判定**对齐桶边界**（只处理整个桶都已过期的数据，避免半桶丢失或重复计数），
+聚合进 `samples_downsampled`（`INSERT OR REPLACE` + 唯一键保证幂等）。
+该操作在**写线程**里执行（大批量删除 + 聚合）；改动 `samples` 表相关逻辑时别忘了它。
 
 ## 长期运行相关（日志 / 崩溃）
 
@@ -189,10 +193,19 @@ E:/Qt/Tools/CMake_64/bin/ctest.exe --test-dir build-vscode --output-on-failure
   - 对外接口与信号 (`start/stop/stopAll/isRunning/writeTag` + 6 个信号) 一律不变，
     界面层不知道线程的存在。`writeTag` 用 `BlockingQueuedConnection` 拿返回值。
   - `isRunning()` 读的是调度器里的状态快照，**不要**跨线程去读 `connection->isOpen()`。
-- **批量写入**：`DataStorage::insertSample` 只入内存队列，每 200ms 或攒够 200 条
-  用一个事务批量提交（`kSampleFlushIntervalMs` / `kSampleBatchSize`）。
+- **批量写入 + 读写分离（P1-4）**：`DataStorage::insertSample` 只入内存队列（**加锁**保护），
+  每 200ms 或攒够 200 条用一个事务批量提交（`kSampleFlushIntervalMs` / `kSampleBatchSize`）。
   退出前 `aboutToQuit → flush()` 保底，别把这一步删了。
-  **SQLite 连接不可跨线程**：提交由 GUI 线程的 QTimer 驱动，不要挪进工作线程。
+  - **SQLite 连接不可跨线程** —— 所以本类内部拆了**两条连接**：读连接住调用者线程（只跑查询），
+    写连接住自建的**写线程**（所有写操作）。`db()` 按当前线程返回对应连接。
+    **方法体里不要直接写 `m_db`，一律走 `db()`**，否则会在错误的线程碰连接。
+  - 写操作经 `inWriter()`（BlockingQueuedConnection）转发，保持"返回即已落库"的同步语义；
+    `insertSample()` 是唯一异步路径（`postWriter()` 只投递不等待）——
+    写线程可能正卡在一次 fsync 上，同步等它会把采集线程一起拖住。
+  - 写线程内的 QTimer（攒批 flush / 保留策略）**父对象必须是 `m_writerStub`**（写线程里的对象）。
+    用 `this` 当父对象会把定时器登记到 GUI 线程，等于白迁。
+  - 连接开 `WAL` + `busy_timeout=3000`：让读连接与写连接真正并发，并兜住偶发锁竞争。
+  - 改这块的验收：`ctest` 必须 **5/5 全绿且测试代码不需要改** —— 接口语义若被迫改动，就是改错了方向。
 - **数据不丢（溢出队列）**，两条铁律别改回去：
   1. `insertSample()` **不判断数据库是否打开**，一律入队 —— 以前是"库没打开就 return false"，
      结果数据库启动失败时丢掉的是**全部**采样。落库还是溢出，交给 `flush()` 决定。

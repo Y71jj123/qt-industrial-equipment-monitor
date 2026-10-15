@@ -59,6 +59,8 @@
 - [x] **MQTT 接入鉴权**：设备可配置用户名 / 密码，CONNECT 报文带 User Name / Password 字段；broker 拒绝时按返回码给出明确原因（如"用户名或密码错误"）
 - [x] **协议插件化**：`createConnection()` 里没有任何协议分支 —— 协议由**注册表**提供，内置协议与外部插件平权；外部插件是独立动态库，丢进 `plugins/protocols/` 即生效（**新增协议零重编译核心代码**）。设备对话框的协议列表与字段可见性也由插件的 `ProtocolTraits` 声明驱动
 - [x] **单元测试 + CI**：`QTest` 覆盖告警状态机 / 工单闭环与 MTTR / 存储往返与溢出补传 / 配置往返 / 协议注册表，`ctest` 一行跑完；GitHub Actions 自动构建 + **零警告**门槛 + 跑测试
+- [x] **无硬件联调**：**图形化虚拟设备**（独立可运行的 Modbus TCP 从站，可注入冻结 / 越限 / 断线故障，用于双窗口演示与断线重连验证）+ 三个零依赖 Python 模拟器
+- [x] **存储读写分离**：SQLite 连接拆成读 / 写两条 —— 查询留在调用线程，写操作（采样批量提交 / 告警 / 操作留痕 / 设备台账 / 保留策略清理）全部转到独立写线程；开 **WAL** 让读写真正并发，磁盘 I/O 不再拖住界面（改完 5 个单测套件零改动全通过）
 
 > 全部核心功能已落地，并完成多轮升级：界面视觉 / 告警体验 / 线程化架构 / 功能增强 → 总览仪表盘 / MQTT 接入鉴权 → **告警工单闭环与 MTTR**。
 
@@ -71,8 +73,8 @@
 | 构建 | CMake（>= 3.16），兼容 Qt Creator 直接打开 |
 | 通信 | Modbus TCP（QTcpSocket 手写 MBAP + PDU）、**Modbus RTU（QSerialPort + CRC16 校验）**、MQTT 3.1.1（QTcpSocket 手写最小子集）、模拟数据源 |
 | 数据可视化 | Qt Charts |
-| 数据存储 | SQLite（Qt SQL），服务端场景可切 MySQL |
-| 并发 | QThread / QThreadPool + 信号槽跨线程通信，采集线程与 UI 线程解耦 |
+| 数据存储 | SQLite（Qt SQL，**WAL + 读写连接分离**），服务端场景可切 MySQL |
+| 并发 | QThread / QThreadPool + 信号槽跨线程通信；采集线程、存储写线程均与 UI 线程解耦 |
 | 日志 | 文件日志 + 界面日志窗口 |
 
 ## 系统架构
@@ -121,9 +123,9 @@ flowchart LR
     K1 --> U4
 ```
 
-设计要点：通信层按协议抽象成统一接口（点位读 / 写 / 连接管理），**新增协议只改 `AcquisitionScheduler::createConnection()` 里一个 switch，上层零改动**；采集到的数据一律经信号槽投递给界面，界面不直接碰通信对象。
+设计要点：通信层按协议抽象成统一接口（点位读 / 写 / 连接管理），协议由**注册表 + 插件**提供 —— `AcquisitionScheduler::createConnection()` 里**已无任何协议分支**，新增协议只写一个插件动态库（核心代码零重编译）；采集到的数据一律经信号槽投递给界面，界面不直接碰通信对象。
 
-> 关于线程：采集已**线程化**——每台设备一个 `QThread` 工作线程，`DeviceConnection` 对象 `moveToThread` 到该线程，读写通过 `QMetaObject::invokeMethod` 跨线程调用；采样数据经队列 + 定时批量事务写入 SQLite（200ms / 200 行），避免高频小事务拖慢界面。
+> 关于线程：**采集与存储都已线程化** —— 每台设备一个 `QThread` 工作线程，`DeviceConnection` 对象 `moveToThread` 到该线程，读写通过 `QMetaObject::invokeMethod` 跨线程调用；存储层内部再把 SQLite 连接拆成**读 / 写两条**：查询留在调用者线程（有索引，省掉跨线程往返），所有写操作住在独立写线程，采样经队列 + 定时批量事务写入（200ms / 200 行）。**事务提交不再占用界面线程** —— 高频采集或慢磁盘都不会让界面卡顿。
 
 ## 目录结构
 
@@ -133,9 +135,12 @@ qt-industrial-equipment-monitor/
 ├── CMakePresets.json       # VS Code / CLI 构建预设
 ├── DEVELOPMENT.md               # 开发约定与已知坑
 ├── ROADMAP.md              # 迭代计划（落点文件 + 验收标准 + 里程碑）
+├── docs/CHANGELOG.md       # 版本变更日志（Keep a Changelog 格式）
 ├── README.md
-├── tools/                  # 零依赖 Python 模拟器（Modbus 从站 / MQTT 发布 / HTTP JSON 桩）
-│   └── bench/              # 性能基线夹具（默认不编译，-DMONITOR_BUILD_BENCH=ON 打开）
+├── tools/                  # 联调工具
+│   ├── virtual_device/     # **图形化虚拟设备**：独立 Modbus TCP 从站（默认编译，用于双窗口演示与真实链路验证）
+│   ├── bench/              # 性能基线夹具（默认不编译，-DMONITOR_BUILD_BENCH=ON 打开）
+│   └── *.py                # 零依赖 Python 模拟器（Modbus TCP/RTU 从站、MQTT 发布）
 ├── tests/                  # 单元测试（QTest；链接 monitor_core —— 被测的就是产品跑的那份代码）
 ├── plugins/                # **外部协议插件**（各自编成独立动态库，产物落到 exe 旁的 plugins/protocols/）
 │   └── http_json/          # HTTP / JSON 数据源插件 —— 也是"新增协议要写多少东西"的样板
@@ -170,7 +175,7 @@ qt-industrial-equipment-monitor/
     │   ├── modbuscommon.h      Modbus 公共逻辑（PDU / CRC16 / 块读合并，TCP 与 RTU 共用）
     │   └── mqttconnection.*    MQTT 3.1.1（手写最小子集）
     ├── core/               # 设备模型、采集调度（线程化 + 自动重连）、告警引擎
-    ├── storage/            # SQLite：采样 / 告警 / 操作 / 设备台账（批量写入）
+    ├── storage/            # SQLite：采样 / 告警 / 操作 / 设备台账（批量写入 + 读写连接分离）
     └── utils/              # 日志（进程内唯一 + 滚动）、配置导入导出、Excel 导出、崩溃转储
 ```
 
@@ -321,10 +326,51 @@ ctest --test-dir build --output-on-failure
 
 ## 不接硬件也能联调（本地模拟器）
 
-`tools/` 下有两个**零依赖**（纯 Python 标准库，不用 pip 装任何东西）的模拟器，
+`tools/` 下有三个**零依赖**（纯 Python 标准库，不用 pip 装任何东西）的模拟器，
 可以在没有真 PLC / 网关的情况下把通信链路完整跑通。
 
-### 一、Modbus TCP：本机模拟一台 PLC
+> **首选：图形化虚拟设备**（`tools/virtual_device/`）—— 见下方「一」。
+> 它是**进程外**的真实 Modbus TCP 从站（独立 Qt 程序），界面能直接看到寄存器实时值，
+> 还能一键注入故障来演示告警与断线重连。
+
+### 一、图形化虚拟设备（推荐：双窗口演示）
+
+`tools/virtual_device/` 是一个**独立可运行**的 Modbus TCP 从站模拟器（C++/Qt，
+**不链接主程序任何代码**）。相比 Python 脚本它多做三件事：
+
+1. **看得见**：界面实时显示 5 个点位的工程值与寄存器值。演示时和监控端并排开两个窗口，
+   数据是真的经 TCP 流过去的，比"我代码里模拟的"有说服力；
+2. **能注入故障**：一键「冻结数据 / 强制越限 / 掐断所有连接」，
+   用来演示告警触发与**断线自动重连**（这两个用进程内 mock 根本验不了）；
+3. **能承接下发**：写入寄存器 / 线圈后**保持该值**（不再被自动波动覆盖），
+   所以「远程控制」演示能看出确实生效了 —— 点「恢复自动」才交还给数据发生器。
+
+```bash
+# 默认构建就带它（想关掉：-DMONITOR_BUILD_VIRTUAL_DEVICE=OFF）
+cmake --build build --target virtual_device
+
+./build/bin/virtual_device                            # 图形界面，点「开始监听」
+./build/bin/virtual_device --auto-start --port 1502   # 起进程即监听（自动化验证用）
+```
+
+然后在客户端「添加设备」里填：
+
+| 字段 | 值 |
+| --- | --- |
+| 协议 | `Modbus TCP` |
+| 地址 | `127.0.0.1` |
+| 端口 | `1502`（默认；界面里可改） |
+| 从站地址 | `1` |
+| 点位表「缩放」 | **保持默认 `1.0`，不用改** |
+
+> **与下面 Python 脚本的关键区别**：脚本把工程值放大 100 倍存进寄存器（所以要填缩放 `0.01`），
+> 本工具**直接按工程值存寄存器**，与主程序 `defaultTagPoints()` 的约定完全一致 ——
+> 开箱即用，不用动任何缩放。
+>
+> 它同时是**真实链路验证**工具：连接管理、MBAP 组帧、块读合并、异常响应
+> （非法地址回 `0x02`、非法功能码回 `0x01`）都在网络上跑过一遍才算数。
+
+### 二、Modbus TCP：本机模拟一台 PLC
 
 ```bash
 python tools/modbus_slave_sim.py             # 监听 127.0.0.1:5020
@@ -344,7 +390,7 @@ python tools/modbus_slave_sim.py --port 5021 # 想模拟多台设备就换端口
 寄存器映射：`0=温度 1=压力 2=转速 3=运行状态 4=振动`，寄存器里存的是「工程值 × 100」，
 所以缩放填 0.01。数值每秒按"均值回归 + 噪声"更新，会自然地在阈值附近波动，方便观察告警。
 
-### 二、MQTT：往 broker 发模拟数据
+### 三、MQTT：往 broker 发模拟数据
 
 ```bash
 # 公共测试 broker（需联网）
@@ -362,7 +408,7 @@ python tools/mqtt_publisher_sim.py --host 127.0.0.1 --topic factory/line1 \
 > 这两个脚本同时也是**协议格式的活文档** —— 想知道项目期望什么报文，看它们即可。
 > MQTT 鉴权采用 3.1.1 的明文 User Name / Password 字段，不加密时等同于明文口令，仅适合内网环境。
 
-### 三、Modbus RTU：用虚拟串口联调（无需真实硬件）
+### 四、Modbus RTU：用虚拟串口联调（无需真实硬件）
 
 Modbus RTU 走串口。没真 PLC 时，用 `socat` 在 Linux（或你的 Ubuntu 虚拟机）里造一对
 "软串口"，一头跑模拟器、一头接软件，就能把 RTU 链路完整跑通。
