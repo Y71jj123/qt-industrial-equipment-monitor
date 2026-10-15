@@ -123,7 +123,7 @@ public:
     /// 人工确认某条活动告警（标记已确认，不改变其活动状态）。
     ///
     /// 注意与 handleAlarm() 的区别：**确认只是"看见了"，处理才代表"有人写了结论"**。
-    /// 现场真正要考核的是后者。
+    /// 现场真正看重的是后者。
     void acknowledge(const QString &deviceId, const QString &tagId);
 
     /// 确认全部活动告警。

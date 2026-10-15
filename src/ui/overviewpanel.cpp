@@ -444,7 +444,7 @@ void OverviewPanel::updateKpiValues()
     }
     applyTone(m_cardHandledAlarms, handledCount > 0 ? QStringLiteral("Ok") : QString());
 
-    // ---- MTTR：现场考核的核心指标 ----
+    // ---- MTTR：现场最看重的指标 ----
     const qint64 mttr = m_alarmEngine ? m_alarmEngine->averageHandleDurationMs() : -1;
     m_cardMttr->value->setText(formatHandleDuration(mttr));
     m_cardMttr->hint->setText(mttr < 0 ? QStringLiteral("还没有处理记录")
