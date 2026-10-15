@@ -1,7 +1,7 @@
 # 开发约定与已知坑
 
-> 本文件供 开发者阅读，说明项目结构、构建方式与代码规范。
-> 人类读者请看 [README.md](./README.md)。
+> 本文件记录项目的开发约定、构建方式、代码规范与已知的坑。
+> 项目功能与架构见 [README.md](./README.md)，迭代计划见 [ROADMAP.md](./ROADMAP.md)，版本演进见 [docs/CHANGELOG.md](./docs/CHANGELOG.md)。
 
 ## 项目是什么
 

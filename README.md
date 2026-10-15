@@ -133,7 +133,7 @@ flowchart LR
 qt-industrial-equipment-monitor/
 ├── CMakeLists.txt          # 顶层构建配置
 ├── CMakePresets.json       # VS Code / CLI 构建预设
-├── DEVELOPMENT.md               # 开发约定与已知坑
+├── DEVELOPMENT.md          # 开发约定与已知坑（构建、规范、踩坑）
 ├── ROADMAP.md              # 迭代计划（落点文件 + 验收标准 + 里程碑）
 ├── docs/CHANGELOG.md       # 版本变更日志（Keep a Changelog 格式）
 ├── README.md
