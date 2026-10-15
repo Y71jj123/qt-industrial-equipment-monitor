@@ -36,7 +36,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 
 - **做什么**：告警确认不再是"点一下就完了"，而是必须录入处理结论（处理人 / 处理动作 / 备注），
   生成处理记录并落库；据此统计 **MTTR（平均修复时长）**、按设备 / 按班次的告警与处理统计。
-- **为什么**：现场考核的核心指标就是 MTTR。只有告警条数、没有处理闭环，告警模块就只是个高亮列表。
+- **为什么**：现场运维最看重的指标就是 MTTR。只有告警条数、没有处理闭环，告警模块就只是个高亮列表。
 - **落点**：`core/alarmengine.*`（`AlarmDisposition` + `handleAlarm` + MTTR）、
   `storage/datastorage.*`（`alarms` 补 `disposition/handled_by/handled_at/note` 四列）、
   `ui/alarmpanel.*`（处理对话框）、`ui/overviewpanel.*`（MTTR 卡）、`ui/reportpanel.*`（MTTR 列）。
@@ -85,7 +85,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
 
 ---
 
-## P1 — 技术深度（体现架构能力，面试主要问这里）
+## P1 — 技术深度（体现架构能力）
 
 ### P1-1 协议插件化 ✅ 已完成
 
@@ -192,7 +192,7 @@ CONNACK 返回码解析、分组设备树、双主题、配置导入导出、总
   带 `--auto-start` 便于无人值守验证与截图。
 - **为什么**：`tools/` 下的 Python 脚本是**命令行**的，而 `MockConnection` 是**进程内**模拟 ——
   后者根本走不到网络层，连接管理、MBAP 组帧、块读、异常响应、断线重连这些**只有真上网络才算验过**。
-  另外，"双窗口演示"（左边假设备、右边监控软件）在答辩/面试场景的说服力远高于口头描述。
+  另外，"双窗口演示"（左边假设备、右边监控软件）在演示场景的说服力远高于口头描述。
 - **落点**：`tools/virtual_device/{signalgenerator,modbustcpslave,virtualdevicewindow,main}.{h,cpp}`
   + 自己的 `CMakeLists.txt`；顶层加 `MONITOR_BUILD_VIRTUAL_DEVICE`（**默认 ON**）。
 - **关键约定**：点位表与主程序 `defaultTagPoints()` **严格对齐**（地址 / 寄存器类型 / 量程），
